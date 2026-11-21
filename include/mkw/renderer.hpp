@@ -526,9 +526,9 @@ public:
     void setSliderOverride(float slider){sliderOverride_=slider;}
     // Whether the next begin() draws both eyes: a 3D screen with the slider
     // (or its QA override) on at the last frame's read (sampleSlider).
-    // 800px Mode on: the slider never turns 3D on (user, Nov 13: switching
-    // looked bad), so no 3D-only reductions either.
-    bool stereoWanted() const {return targetRight_&&sliderOn_&&!(wideTarget_&&wideSetting);}
+    // The 3D slider wins over 800px Mode (beginStereo), so 3D is wanted
+    // whenever the slider is up.
+    bool stereoWanted() const {return targetRight_&&sliderOn_;}
     Vec3 cameraBackward() const { return {mainView_.r[2].x,mainView_.r[2].y,mainView_.r[2].z}; }
     // World point -> top-screen pixels with the active camera; viewZ < 0 is in front.
     bool projectTop(Vec3 world,float& x,float& y,float& viewZ) const;

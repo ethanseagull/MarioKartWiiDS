@@ -772,13 +772,15 @@ float Renderer::sampleSlider(){
 // whole scene: the subject's depth, set per frame, times the scene's ratio.
 void Renderer::beginStereo(float targetDistance){
     frameStereo_={};frameSlider_=0;cullProjection_=mainProjection_;
-    // 800px Mode: every frame is 800px and the 3D slider is ignored.
-    frameWide_=wideTarget_&&wideSetting;
+    // 800px Mode yields to the 3D slider: slider up draws 3D (400px per eye),
+    // slider down draws 800px. sampleSlider's hysteresis keeps a slider
+    // resting near the bottom from flipping between the two modes.
+    const float slider=targetRight_?sampleSlider():0.f;
+    frameWide_=wideTarget_&&wideSetting&&!(slider>0);
     const stereo::Scene scene=stereoSubjectSet_?stereoScene_:stereo::Race;
     const float subject=stereoSubjectSet_?stereoSubject_:targetDistance;
     stereoSubjectSet_=false;
     if(!targetRight_||frameWide_)return;
-    const float slider=sampleSlider();
     if(!(slider>0))return;
     frameSlider_=std::min(slider,1.f);
     frameStereo_=stereo::frame(slider,stereoDisplay_,scene,subject);
