@@ -180,6 +180,9 @@ struct ShellGuidance {
     float stretch=1; // Blue dive: model Y scale (retail +0x60); the sides are 2*scale-stretch.
     uint32_t orbitAngle=0;uint16_t orbitStep=1000,bobAngle=0,leaderMask=0;
     uint8_t slopeTicks=0;bool splineReady=false,targetLive=true,hasRoute=false,ownerLed=false,dodge=false;
+    // ObjKouraR +0x1cf: a fall-boundary contact (0x807a65bc, 0x807a6bec). A homing Red that
+    // has it goes straight (0x807a0444); only the straight launch clears it (0x807a68a8).
+    bool fallBoundary=false;
     // QA trace (RaceItems::qaBlueTrace): route ticks, ticks on a backward
     // cursor, ticks moving against the track, longest such run, own point.
     uint16_t qaTicks=0,qaCursorBack=0,qaMovingBack=0,qaRun=0,qaMaxRun=0,qaPoint=0xffff;bool qaLogged=false;

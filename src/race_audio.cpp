@@ -1232,6 +1232,8 @@ struct RaceAudioLayer::Impl {
   if (!v.enabled) return;
   const u32 c = in.cues; const u32* w = in.status;
   if (c & cue::Respawn) voiceRequest(e, i, 0x1b);                 // Kart::Movement::Respawn
+  // AI::Character's overtake (CharacterActor 0x80865580): +0x6ff enabled, +0x6dc cooldown, then type 4.
+  if (in.overtakeVoice && v.overtakeCooldown <= 0) voicePlay(e, i, 4);
   if (c & cue::Fall) voiceRequest(e, i, in.fallVoice);             // Kart::Collision::ActivateOOB
   if (in.actionCount != v.actionCount) {                            // Kart::Damage::SetDamage
    v.actionCount = in.actionCount;

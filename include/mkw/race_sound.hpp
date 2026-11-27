@@ -66,10 +66,14 @@ public:
  void setTrace(void (*trace)(const char* line, void* context), void* context) { trace_ = trace; traceContext_ = context; }
 
  // Residency chosen at begin() (runtime.log / QA).
- struct Budget { std::uint32_t linearFree = 0, budget = 0, resident = 0, cache = 0; unsigned demoted = 0; };
+ // lean: LINEAR was short after the race's graphics, so the other racers' engines
+ // and horns load on demand (1) and the wave cache may be below CacheMin (2).
+ struct Budget { std::uint32_t linearFree = 0, budget = 0, resident = 0, cache = 0; unsigned demoted = 0, lean = 0; };
  const Budget& budget() const { return budget_; }
  RaceAudioLayer& layer() { return layer_; }
  const RaceAudioLayer& layer() const { return layer_; }
+ // SoundTriggerMgr's zone for the local racer (-1 none): course camera flashes (env_effects.hpp).
+ int soundZone() const { return triggers_.zone(); }
 
  // EGG::AudioTrack: moves linearly to a target over frames.
  struct Track {

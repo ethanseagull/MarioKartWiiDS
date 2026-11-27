@@ -2,6 +2,7 @@
 
 #include "game/field/ObjectDirector.hh"
 #include "game/kart/KartObject.hh"
+#include <bit>
 #include <cmath>
 #include "game/field/RailManager.hh"
 
@@ -68,7 +69,7 @@ s16 ObjectBasabasaDummy::onItemCollision(const EGG::Vector3f &position,
         auto direction = velocity;
         if (direction.length() < 30.0f) {
             direction = pos() - position;
-            direction.normalise();
+            direction.normalise2(); // USA 806b2590: DOL 80242cb0
             direction *= 80.0f;
         }
         requestHit(direction);
@@ -85,10 +86,13 @@ void ObjectBasabasaDummy::onGlobalItemCollision(s16, s16 objectReaction) {
 // USA806b1e00: detach the collision, launch at 20 degrees and speed 150.
 void ObjectBasabasaDummy::enterState1() {
     unregisterCollision();
-    const float horizontal = std::sqrt(m_hitVelocity.x * m_hitVelocity.x +
+    // Retail 806b1e54..806b1f04: frsqrt square root, tan as SinFIdx/CosFIdx of
+    // 20 x (128/180), normalise2 (DOL 80242cb0).
+    const f32 horizontal = EGG::Mathf::sqrt(m_hitVelocity.x * m_hitVelocity.x +
             m_hitVelocity.z * m_hitVelocity.z);
-    m_hitVelocity.y = horizontal * std::tan(20.0f * DEG2RAD);
-    m_hitVelocity.normalise();
+    const f32 fidx = std::bit_cast<f32>(0x3f360b61u) * 20.0f;
+    m_hitVelocity.y = (horizontal * EGG::Mathf::SinFIdx(fidx)) / EGG::Mathf::CosFIdx(fidx);
+    m_hitVelocity.normalise2();
     m_hitVelocity *= 150.0f;
     calcTransform();
     m_hitForward = m_hitAxis = transform().base(2);

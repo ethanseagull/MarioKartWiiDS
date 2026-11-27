@@ -56,7 +56,8 @@ f32 ObjectVeniceGate::height(u32 time)const{
     if(t>=m_start+120)return m_origin.y+m_rise;
     // 80804d78..e00: original120-frame half-cosine, half-tick sample offset.
     const f32 angle=F_PI*(static_cast<f32>((t-m_start)%120)-.5f)/120.f;
-    return m_origin.y+.5f*m_rise*(1.f-EGG::Mathf::cos(angle));
+    // 80804de0..80804e00: (0.5 x rise) x (1 - cos) and the add in double, one rounding.
+    return static_cast<f32>(static_cast<f64>(m_origin.y)+(0.5*static_cast<f64>(m_rise))*static_cast<f64>(1.f-EGG::Mathf::cos(angle)));
 }
 const EGG::Matrix34f &ObjectVeniceGate::getUpdatedMatrix(u32 offset){
     const u32 t=System::RaceManager::Instance()->timer()-offset;

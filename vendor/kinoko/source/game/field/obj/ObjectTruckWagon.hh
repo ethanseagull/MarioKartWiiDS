@@ -69,6 +69,11 @@ public:
 
     void reset(u32 idx);
 
+    /// Presentation only: landings that start SE_CN_TRK_TRUCK_GND and rk_truck (USA 0x806d0140).
+    [[nodiscard]] u32 landSerial() const {
+        return m_landSerial;
+    }
+
     [[nodiscard]] bool isActive() const {
         return m_active;
     }
@@ -102,6 +107,7 @@ private:
     void calcState3() {}
 
     bool m_active; ///< Whether or not the minecart is spawned and has collision
+    u32 m_landSerial = 0; ///< Presentation only (rk_truck)
     EGG::Vector3f m_vel;
     f32 m_speed;
     EGG::Vector3f m_lastVel;
@@ -147,6 +153,14 @@ public:
 
     /// @addr{0x806E24E4}
     void loadRail() override {}
+
+    /// Presentation only: the carts this spawner recycles.
+    [[nodiscard]] size_t cartCount() const {
+        return m_carts.size();
+    }
+    [[nodiscard]] const ObjectTruckWagonCart *cart(size_t i) const {
+        return m_carts[i];
+    }
 
 private:
     owning_span<ObjectTruckWagonCart *> m_carts;

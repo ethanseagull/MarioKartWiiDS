@@ -31,7 +31,7 @@ void ObjectVolcanoRock::calc() {
 }
 
 /// @addr{0x8081A414}
-EGG::Vector3f ObjectVolcanoRock::calcPos(u32 frame) {
+EGG::Vector3f ObjectVolcanoRock::calcPos(s32 frame) {
     f32 tz = static_cast<f32>((frame + m_phaseShift) % m_zPeriod);
     f32 ty = static_cast<f32>(frame % m_yPeriod);
 

@@ -5,6 +5,7 @@
 #include <mkw/race_voice_tables.hpp>
 #include <mkw/sound_ids.hpp>
 #include <mkw/sound_system.hpp>
+#include <mkw/old3ds_profile.hpp>
 #include <3ds.h>
 #include <algorithm>
 #include <cmath>
@@ -83,6 +84,10 @@ std::uint32_t goalVariant(unsigned character, unsigned result) {
 // cache uses the hard floor: pause releases scenery before loading its UI.
 constexpr std::uint32_t LinearReserve = 2048u * 1024, HardReserve = 1024u * 1024;
 constexpr std::uint32_t CacheMin = 192u * 1024, CacheMax = 640u * 1024;
+// The race still starts with less (Budget::lean): a smaller cache only means
+// waves wait or a sound is skipped (WaveWaitFrames), never a failed race load
+// (playtesters' "required race sound cache budget" on Old and New 3DS, Nov 23).
+constexpr std::uint32_t CacheFloor = 64u * 1024, LeanReserve = 512u * 1024;
 }
 
 // ------------------------------------------------------------ SinglePlayer
@@ -191,11 +196,11 @@ void RaceSound::begin(const Setup& s) {
 bool RaceSound::prepareScene(){
  if(!SoundSystem::instance().available())return false;
  planScene();
- return budget_.cache>=CacheMin;
+ return budget_.cache>=CacheFloor;
 }
 bool RaceSound::resourcesReady() const{
  const auto& sys=SoundSystem::instance();
- return sys.available()&&!planPending_&&budget_.cache>=CacheMin&&sys.sceneReady()&&sys.stats().cacheBytes>=budget_.cache;
+ return sys.available()&&!planPending_&&budget_.cache>=CacheFloor&&sys.sceneReady()&&sys.stats().cacheBytes>=budget_.cache;
 }
 void RaceSound::planScene() {
  planPending_ = false;
@@ -272,7 +277,8 @@ void RaceSound::planScene() {
  scene.keepMs = 400;
  resident = {id::group::GRP_CMN, id::group::GRP_RACE};
  if (course < 0x2a) resident.push_back(course + 0xf);
- for (unsigned i = 0; i < s.racers; ++i) if (s.racer[i].local) resident.push_back(s.racer[i].character<24?std::uint32_t(VoiceGroup[s.racer[i].character]):392+4*s.racer[i].miiVoice);
+ // Old 3DS profile: the player's voices play through the wave cache.
+ if (!old3dsProfile().voicesThroughCache) for (unsigned i = 0; i < s.racers; ++i) if (s.racer[i].local) resident.push_back(s.racer[i].character<24?std::uint32_t(VoiceGroup[s.racer[i].character]):392+4*s.racer[i].miiVoice);
  // The course stream and the next one (prepared) play from block rings.
  const std::uint32_t stream = course < 0x2a ? std::max(sys.streamBytes(CourseStream[course]), sys.streamBytes(CourseStream[course] + 1)) : 0;
  const std::uint32_t streams = std::max<std::uint32_t>(stream, 64u * 1024) * 2;
@@ -285,8 +291,31 @@ void RaceSound::planScene() {
   budget_.resident = sys.residentBytes(scene);
  };
  // Demotion order: the player's voices, the course group, the race bank (GRP_CMN stays).
+ budget_.lean = 0;
  for (measure(); budget_.resident + CacheMin > budget_.budget && resident.size() > 1; measure()) { resident.pop_back(); ++budget_.demoted; }
- if (budget_.budget >= budget_.resident + CacheMin) budget_.cache = std::min(CacheMax, budget_.budget - budget_.resident);
+ if (budget_.resident + CacheMin > budget_.budget) {
+  // Lean (1): only the local racers' vehicles keep engines and horns resident;
+  // the others' load on demand, as those of vehicles not in the race do.
+  bool localVehicle[36] = {};
+  for (unsigned i = 0; i < s.racers && i < s.racer.size(); ++i) if (s.racer[i].local && s.racer[i].vehicle < 36) localVehicle[s.racer[i].vehicle] = true;
+  std::vector<std::uint32_t> other;
+  for (auto f : EngineFamilies) {
+   bool used = false, local = false;
+   for (unsigned v = 0; v < 36; ++v) if (vehicles[v] && EngineBase[v] == f) { used = true; local |= localVehicle[v]; }
+   if (used && !local) for (unsigned k = 0; k < 7; ++k) other.push_back(f + k);
+  }
+  for (unsigned v = 0; v < 36; ++v) if (vehicles[v] && !localVehicle[v]) other.push_back(HornBase + v);
+  if (!other.empty()) {
+   must.erase(std::remove_if(must.begin(), must.end(), [&](std::uint32_t id) { return std::find(other.begin(), other.end(), id) != other.end(); }), must.end());
+   onDemand.insert(onDemand.end(), other.begin(), other.end());
+   scene.residentSounds = must.data(); scene.residentSoundCount = int(must.size());
+   scene.onDemandSounds = onDemand.data(); scene.onDemandCount = int(onDemand.size());
+   measure(); budget_.lean = 1;
+  }
+ }
+ // Old 3DS profile: a smaller wave cache (it evicts sooner).
+ const std::uint32_t cacheMax = old3dsProfile().raceSoundCache ? std::max(CacheMin, std::min<std::uint32_t>(CacheMax, old3dsProfile().raceSoundCache)) : CacheMax;
+ if (budget_.budget >= budget_.resident + CacheMin) budget_.cache = std::min(cacheMax, budget_.budget - budget_.resident);
  else {
   // The measured pause UI is a soft target, not a hard race allocation:
   // entering pause first frees track/sky, and resume frees the UI first.
@@ -296,7 +325,12 @@ void RaceSound::planScene() {
   // Coconut car loops plus race waves can pin almost all of a 192 KiB arena.
   const std::uint32_t used = budget_.resident + streams;
   const auto hardReserve=HardReserve;
-  budget_.cache = free > used + hardReserve ? std::min(CacheMax, free - used - hardReserve) : 0;
+  budget_.cache = free > used + hardReserve ? std::min(cacheMax, free - used - hardReserve) : 0;
+  // Lean (2): a cache down to CacheFloor above a smaller reserve, instead of no race.
+  if (budget_.cache < CacheMin) {
+   const std::uint32_t lean = free > used + LeanReserve ? std::min(CacheMin, free - used - LeanReserve) : 0;
+   if (lean > budget_.cache) { budget_.cache = lean; budget_.lean = 2; }
+  }
  }
  scene.cacheBytes = budget_.cache;
  sys.loadScene(scene);
@@ -550,8 +584,8 @@ void RaceSound::step(const Frame& f, RaceAudioFrame* actors) {
     char line[160];
 
 #ifndef MKW_RELEASE
-    std::snprintf(line, sizeof line, "race sound plan tick=%u linear_free=%lu budget=%lu resident=%lu cache=%lu demoted=%u", tick_,
-                  (unsigned long)budget_.linearFree, (unsigned long)budget_.budget, (unsigned long)budget_.resident, (unsigned long)budget_.cache, budget_.demoted);
+    std::snprintf(line, sizeof line, "race sound plan tick=%u linear_free=%lu budget=%lu resident=%lu cache=%lu demoted=%u lean=%u", tick_,
+                  (unsigned long)budget_.linearFree, (unsigned long)budget_.budget, (unsigned long)budget_.resident, (unsigned long)budget_.cache, budget_.demoted, budget_.lean);
     trace_(line, traceContext_);
 #endif
 
@@ -634,7 +668,7 @@ void RaceSound::step(const Frame& f, RaceAudioFrame* actors) {
   if (!introLoaded_) a.objectSounds = 0;
   a.raceState = std::uint8_t(state_); a.alteration = std::uint8_t(alteration_); a.engineClass = std::uint8_t(std::min(setup_.engineClass, 2u));
   // A frame dropped by a full ring keeps its cues for the next one.
-  if (layer_.push(a)) { for (auto& k : a.kart) { k.cues = 0; k.bumpedBy = 0; k.powerObjectContact = 0; k.coinArrival = false; k.rainbowFall = false; } a.itemSounds = 0; a.ambienceOps = 0; a.objectSounds = 0; a.balloonSounds = 0; }
+  if (layer_.push(a)) { for (auto& k : a.kart) { k.cues = 0; k.bumpedBy = 0; k.powerObjectContact = 0; k.coinArrival = false; k.overtakeVoice = false; k.rainbowFall = false; } a.itemSounds = 0; a.ambienceOps = 0; a.objectSounds = 0; a.balloonSounds = 0; }
  }
  SoundCommand c; c.type = SoundCommand::Layer; sys.post(c);
 }

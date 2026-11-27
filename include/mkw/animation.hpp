@@ -189,6 +189,17 @@ private:
     std::vector<std::vector<RigidPart>> rigidParts_;
     std::array<int,64> baseTextures_{};
     bool dataLinear_=true;
+    // Opponent banks from a .dsku (VehicleVisualAssets unlitBanks) stay compact
+    // in memory: keyframes hold the 3x4 matrix only, and every frame's normal
+    // matrix is the .dsku's one set (fixedNormals_, 9 floats a bone), as the old
+    // expansion copied it into each frame. keyShort_: the 12 values as s16 with
+    // per-bone scales (keyScale_: 3x3, translation). keyBytes_: bytes per bone in
+    // a keyframe (84 full, 48 compact, 24 short).
+    unsigned keyBytes_=84;bool keyShort_=false;
+    std::vector<float> fixedNormals_,keyScale_,keyA_,keyB_;
+    // Frames a and b of clip c as floats per bone (key: 21, or 12 for a compact
+    // bank); a short bank decodes into keyA_/keyB_ (only `bones` when given).
+    void keyPair(const Clip& c,unsigned a,unsigned b,const float*& x,const float*& y,unsigned& key,const unsigned* bones=nullptr,unsigned boneCount=0);
     uint8_t* data_=nullptr;const SourceVertex* source_=nullptr;const Range* ranges_=nullptr;
     unsigned vertices_=0,matrices_=0,shapes_=0,count_=0,faceCount_=0,transitionTick_=0;
     int lastClip_=-1;

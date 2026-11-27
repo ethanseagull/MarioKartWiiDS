@@ -459,6 +459,15 @@ race_map=ROOT/'build/race-map/textures'
 if not (race_map/'race_bottom_ui_256.t3x').is_file():raise ValueError('Run tools/cook_race_map.py before packaging')
 for extra in sorted(race_map.glob('race_*.t3x')):
  if not extra.name.startswith('._'):overlay['textures/'+extra.name]=extra
+# The race lower screen's Standings view (tools/cook_race_standings.py): per-course silhouettes,
+# emblem tiles, its atlas and name font; the course intro's info box (tools/cook_flyover_info.py).
+for stage,cook,what in (('race-standings','cook_race_standings.py','Standings view'),('flyover-info','cook_flyover_info.py','course info box')):
+ listing=ROOT/'build'/stage/(stage+'.json')
+ if not listing.is_file():raise ValueError(f'Run tools/{cook} before packaging')
+ for relative,expected in json.loads(listing.read_text())['files'].items():
+  source=ROOT/'build'/stage/relative
+  if not relative.startswith('textures/') or not source.is_file() or digest_file(source)!=expected:raise ValueError(f'Invalid {what} file: '+relative)
+  overlay[relative]=source
 # Offline sprites for the live minimap object layer; only the active course is resident.
 map_objects=ROOT/'build/map-objects/textures'
 for course in (2,3,5,10,11,12,14,15,22,30):

@@ -176,12 +176,18 @@ bool RacerVisuals::load(){
                 model->enableSkinCulling(bank->matrixCount());
             }else if(!bank)model->enableStaticCulling();
         };
+        // Memory safety net (Nov 23): an opponent loaded while LINEAR is short
+        // keeps no LOD parts (about 160 KB) and is always drawn at full detail
+        // (out.lod: no LOD without them), so the race sound and the pause menu
+        // still fit instead of the race failing to load. Costs GPU time only.
+        constexpr size_t LodReserve=5u<<20;
+        const bool lodRoom=linearSpaceFree()>=LodReserve;
         char lowName[160];std::snprintf(lowName,sizeof lowName,"models/%sdriver_lod.gmdl",r->choice->prefix);
         auto low=std::make_unique<Model>();
-        if(low->load(lowName)){low->freezeLighting();low->enableStaticCulling();r->driverLod=std::move(low);}
+        if(lodRoom&&low->load(lowName)){low->freezeLighting();low->enableStaticCulling();r->driverLod=std::move(low);}
         auto loadLow=[&](const char* part){char name[160];std::snprintf(name,sizeof name,"models/%s%s%s.gmdl",r->choice->prefix,teamVehicleSuffix(unsigned(player.vehicle),config.teams?RaceTeam(player.team):RaceTeam::None),part);auto model=std::make_unique<Model>();if(!model->load(name))return std::unique_ptr<Model>{};model->freezeLighting();model->enableStaticCulling();return model;};
-        r->bodyLod=loadLow("body_lod");r->bodyLodRear=loadLow("body_lod_rear");
-        if(VehicleLodLayout[r->choice->vehicle].handle){r->handleLod=loadLow("handle_lod");r->handleLodRear=loadLow("handle_lod_rear");}
+        if(lodRoom){r->bodyLod=loadLow("body_lod");r->bodyLodRear=loadLow("body_lod_rear");}
+        if(lodRoom&&VehicleLodLayout[r->choice->vehicle].handle){r->handleLod=loadLow("handle_lod");r->handleLodRear=loadLow("handle_lod_rear");}
         freeze(r->driver,r->animation);freeze(r->body,r->bodyAnimation);
         for(unsigned n=0;n<r->extras.size();++n)freeze(r->extras[n],r->extraAnimation[n]);
         for(auto& wheel:r->wheels)if(wheel){if(!diag::liveOpponents)wheel->freezeLighting();wheel->enableStaticCulling();}

@@ -16,6 +16,7 @@
 #include <mkw/race_balloon.hpp>
 #include <mkw/bullet_bill.hpp>
 #include <mkw/blooper.hpp>
+#include <mkw/retail_lighting.hpp>
 #include <mkw/thunder_cloud.hpp>
 #include <mkw/item_rules.hpp>
 #include <mkw/item_visual.hpp>
@@ -287,6 +288,8 @@ struct RaceHud::Impl {
     std::array<ThunderCloudVisual,12> clouds{};
     ObjectBank cloudMaterials;int cloudColor=-1;std::vector<SubmeshOverride> cloudOverrides;
     std::array<uint16_t,12> previousCloud{};
+    // The retail team item light (item_light), loaded for team races and battles.
+    std::unique_ptr<Model> itemLight;std::unique_ptr<DriverAnimation> itemLightAnimation;
     std::array<std::unique_ptr<DriverAnimation>,21> animations;
     std::unique_ptr<Model> box;
     std::unique_ptr<Model> bombCore;
@@ -348,7 +351,8 @@ unsigned hudKey(){
     const auto& scenario=Kinoko::System::RaceConfig::Instance()->raceScenario();
     const auto& q=renderQuality();
     return 1u|unsigned(scenario.gameMode==Kinoko::System::RaceConfig::Scenario::GameMode::Battle)<<1|unsigned(scenario.battleType)<<2|
-        unsigned(q.halfLargeTextures)<<8|unsigned(q.reduced)<<9|unsigned(shrinkHudTextures)<<10|unsigned(DriverAnimation::gpuPoses)<<11;
+        unsigned(q.halfLargeTextures)<<8|unsigned(q.reduced)<<9|unsigned(shrinkHudTextures)<<10|unsigned(DriverAnimation::gpuPoses)<<11|
+        unsigned(scenario.teams&&RaceHud::teamHalos)<<12;
 }
 }
 void RaceHud::park(){
@@ -485,6 +489,14 @@ bool RaceHud::load(){
         valid&=fixedBank->load("models/item_14.dskm",fixed)&&fixedBank->prepareLitSkinning(fixed);
         // Unlit GPU indices are kept in normal.x; the shared CHR0 pose has identical slots.
         if(bank.gpuSkinned())bank.shareDrawVertices(cloud);
+    }
+    // The retail team light (Item::Obj::LoadItemLight, USA 80797360, called by ObjBanana /
+    // ObjKouraRed / ObjKouraGreen behind the teams byte 805120e1): team races and battles.
+    // Optional: without it no light draws.
+    if(ItemLightModel&&ItemLightBank&&teamHalos&&scenario.teams){
+        auto& m=*impl_;m.itemLight=model(ItemLightModel,true);
+        if(m.itemLight){auto animation=std::make_unique<DriverAnimation>();
+            if(animation->load(ItemLightBank,*m.itemLight)){animation->skinNormals(true);m.itemLightAnimation=std::move(animation);}else m.itemLight.reset();}
     }
     if(impl_->models[3]){bakeMaskUv(*impl_->models[3],FakeBoxMaterials);bakeBoxEnvironment(*impl_->models[3],FakeBoxMaterials);}
     if(impl_->staticModels[3]){bakeMaskUv(*impl_->staticModels[3],FakeBoxMaterials);bakeBoxEnvironment(*impl_->staticModels[3],FakeBoxMaterials);}
@@ -791,7 +803,18 @@ void RaceHud::drawWorld(Renderer& renderer,const RaceItems& items,Vec3 viewer,un
         transform.r[0].x=x.x;transform.r[0].y=y.x;transform.r[0].z=scaledZ.x;transform.r[0].w=position.x;
         transform.r[1].x=x.y;transform.r[1].y=y.y;transform.r[1].z=scaledZ.y;transform.r[1].w=position.y;
         transform.r[2].x=x.z;transform.r[2].y=y.z;transform.r[2].z=scaledZ.z;transform.r[2].w=position.z;
-        drawPosed(12,*impl_->staticModels[12],transform);
+        // GessoScreen::UpdateModel (USA 0x807d581c beq): the model takes its kart's light
+        // (the kart light 0x8058ac04 -> ModelDirector light) only with +0x1c, set on DS Twilight
+        // House (course 38, ctor 0x807d537c): the anchored kart's light zone, as its kart draws.
+        // Every other course draws the baked copy. DIAG off: no-blooper-light.txt.
+        const bool kartLight=blooperKartLight&&impl_->models[12]&&
+            Kinoko::System::RaceConfig::Instance()->raceScenario().course==Kinoko::Course::DS_Twilight_House;
+        if(kartLight){
+            const auto* zone=racerLightZones::zone(blooper.player);const auto* zoneCourse=racerLightZones::course();
+            if(zone&&zoneCourse){const auto light=zone->light(*zoneCourse);renderer.setRacerLight(&light,zone->ambientColor());}
+            drawPosed(12,*impl_->models[12],transform);
+            if(zone&&zoneCourse)renderer.setRacerLight(nullptr);
+        }else drawPosed(12,*impl_->staticModels[12],transform);
     }
     if(items.hud(0).pow&&items.hud(0).pow<=158&&impl_->models[13]){
         const auto& pose=Kinoko::Kart::KartObjectManager::Instance()->object(0)->pose();
@@ -852,6 +875,64 @@ void RaceHud::drawWorld(Renderer& renderer,const RaceItems& items,Vec3 viewer,un
             drawPosed(orbitModel,*heldModel,t);
         }
     }
+    drawTeamItemLights(renderer,items,viewer,tick);
+}
+// The retail team item light: item_light's lambert2, colour C0 + TEXC * C1 (item_light_blue's
+// or item_light_red's TevColor0/1), alpha TEXA, mirrored texture, blended over the scene
+// without depth writes.
+namespace {
+struct LightMaterial {Renderer* renderer;const Model* model;uint32_t c0,c1;};
+void bindLight(void* context,std::size_t){
+    auto& m=*static_cast<LightMaterial*>(context);
+    for(int stage=0;stage<6;++stage)C3D_TexEnvInit(C3D_GetTexEnv(stage));
+    C3D_TexEnvBufUpdate(C3D_Both,0);m.renderer->setEnvironmentPairNow(nullptr);m.renderer->clearEnvironmentUv();
+    auto* t=&m.model->textures[0]->gpu;C3D_TexSetWrap(t,GPU_MIRRORED_REPEAT,GPU_MIRRORED_REPEAT);C3D_TexBind(0,t);
+    auto* e0=C3D_GetTexEnv(0);auto* e1=C3D_GetTexEnv(1);
+    C3D_TexEnvColor(e0,m.c1);C3D_TexEnvSrc(e0,C3D_RGB,GPU_TEXTURE0,GPU_CONSTANT);C3D_TexEnvFunc(e0,C3D_RGB,GPU_MODULATE);
+    C3D_TexEnvSrc(e0,C3D_Alpha,GPU_TEXTURE0);C3D_TexEnvFunc(e0,C3D_Alpha,GPU_REPLACE);
+    C3D_TexEnvColor(e1,m.c0);C3D_TexEnvSrc(e1,C3D_RGB,GPU_PREVIOUS,GPU_CONSTANT);C3D_TexEnvFunc(e1,C3D_RGB,GPU_ADD);
+    C3D_TexEnvSrc(e1,C3D_Alpha,GPU_PREVIOUS);C3D_TexEnvFunc(e1,C3D_Alpha,GPU_REPLACE);
+    C3D_AlphaTest(false,GPU_ALWAYS,0);C3D_CullFace(GPU_CULL_NONE);
+    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ZERO,GPU_ONE);
+    C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);
+}
+}
+void RaceHud::drawTeamItemLights(Renderer& renderer,const RaceItems& items,Vec3 viewer,unsigned tick){
+    auto& m=*impl_;if(!m.itemLight||!m.itemLightAnimation)return;
+    // The light is set up as Retro Rewind's ItemBubble.cpp SetupItemLightAnimation (non-Royale
+    // branch) plays the retail team light: an item of a racer on the local player's team (the
+    // camera's), item_light_red for a red team's (PlayAnmNoBlend(team != TEAM_RED): 0 red,
+    // 1 blue) and the item_light CHR0.
+    const auto& scenario=Kinoko::System::RaceConfig::Instance()->raceScenario();
+    if(!teamHalos||!scenario.teams||scenario.playerCount==0||scenario.players[0].team>=2)return;
+    constexpr bool hasRed=std::size(ItemLightRed)>1;
+    const bool red=scenario.players[0].team==0;
+    if(red&&!hasRed)return;
+    const unsigned char (*colours)[2][3]=red?ItemLightRed:ItemLightBlue;
+    // One pose and colour a frame for every light (the CHR0's scale pulse; billboard bone, ROT).
+    const unsigned frame=tick%unsigned(red?std::size(ItemLightRed):std::size(ItemLightBlue));
+    const int clip=m.itemLightAnimation->find("item_light");
+    bool posed=false;
+    const auto& view=renderer.viewFrustum().view;
+    const Vec3 right{view.r[0].x,view.r[0].y,view.r[0].z},up{view.r[1].x,view.r[1].y,view.r[1].z},back{view.r[2].x,view.r[2].y,view.r[2].z};
+    const auto& c=colours[frame];
+    LightMaterial material{&renderer,m.itemLight.get(),abgr(c[0]),abgr(c[1])};
+    const auto& actors=items.actors();
+    items.forEachActorSlotRead([&](unsigned n){const auto& actor=actors[n];
+        // ObjKouraGreen, ObjBanana, ObjKouraRed; a held or trailing item (bitfield78 0x10000) is not an actor here.
+        if(!actor.active||actor.explosion)return true;
+        if(actor.kind!=ItemKind::GreenShell&&actor.kind!=ItemKind::RedShell&&actor.kind!=ItemKind::Banana)return true;
+        if(actor.owner<0||unsigned(actor.owner)>=scenario.playerCount||scenario.players[actor.owner].team!=scenario.players[0].team)return true;
+        if(dot(actor.position-viewer,actor.position-viewer)>22000.f*22000.f)return true;
+        if(!posed){m.itemLightAnimation->apply(*m.itemLight,clip<0?0:clip,float(frame),tick);renderer.setUvOffset(0,0);posed=true;}
+        const Vec3 p=actor.visualPosition();const float s=releasedItemVisual(actor).scale.x;
+        C3D_Mtx t;Mtx_Identity(&t);
+        t.r[0].x=right.x*s;t.r[0].y=up.x*s;t.r[0].z=back.x*s;t.r[0].w=p.x;
+        t.r[1].x=right.y*s;t.r[1].y=up.y*s;t.r[1].z=back.y*s;t.r[1].w=p.y;
+        t.r[2].x=right.z*s;t.r[2].y=up.z*s;t.r[2].z=back.z*s;t.r[2].w=p.z;
+        renderer.draw(*m.itemLight,t,false,bindLight,material);
+        ++itemLightDraws;
+        return true;});
 }
 // KartKiller hands KartEffect its model's "body" joint matrix for rk_killer
 // (USA 0x805b05d4 -> 0x8055b6fc "body" -> 0x806a4a90). The joint rolls and bobs

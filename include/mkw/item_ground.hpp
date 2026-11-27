@@ -6,10 +6,10 @@ namespace mkw::items {
 inline ItemSurface groundContact(ItemWorldQuery query,const ItemActor& a){
     if(!query)return {};
     auto surface=query(a.previous,a.position,a.terrainRadius);
-    if(!a.settled||surface.kill||surface.cannon||length(surface.floorNormal)>.1f)return surface;
+    if(!a.settled||surface.cannon||length(surface.floorNormal)>.1f)return surface;
     const Vec3 inset=normalized(a.up,{0,1,0});
     auto probe=query(a.previous,a.position-inset,a.terrainRadius);
-    if(length(probe.floorNormal)>.1f&&!probe.kill&&!probe.cannon){
+    if(length(probe.floorNormal)>.1f&&!probe.cannon){
         surface.floorNormal=probe.floorNormal;
         surface.floorTypes=probe.floorTypes;
         surface.floorMotion=probe.floorMotion;surface.floorObject=probe.floorObject;surface.floorObjectY=probe.floorObjectY;

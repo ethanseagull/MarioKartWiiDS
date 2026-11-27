@@ -44,10 +44,17 @@ public:
         return sectionPtr ? EGG::egg_new<T>(sectionPtr) : nullptr;
     }
 
-    [[nodiscard]] s16 findSector(const EGG::Vector3f &pos, u16 checkpointIdx, f32 &distanceRatio);
+    /// Search flags (retail passes them in r10 of 0x80511110): bit 0 the player
+    /// is forwards, bit 1 key checkpoints do not stop the search, bit 2 the
+    /// depth limit is 12 instead of 6. findSector's fullSearch (its last
+    /// argument, 1 at the race start: PAL 0x80534260) searches with bits 1+2.
+    enum SectorSearch : u32 { SearchForwards = 1, SearchThroughKcp = 2, SearchDeep = 4 };
+
+    [[nodiscard]] s16 findSector(const EGG::Vector3f &pos, u16 checkpointIdx, f32 &distanceRatio,
+            bool fullSearch = false);
     [[nodiscard]] s16 findRecursiveSector(const EGG::Vector3f &pos, s16 depth,
             bool searchBackwardsFirst, MapdataCheckPoint *checkpoint, f32 &completion,
-            bool playerIsForwards) const;
+            u32 flags) const;
 
     /// @beginGetters
     [[nodiscard]] u16 getCheckPointEntryOffsetMs(u16 i, const EGG::Vector3f &pos,
@@ -191,16 +198,16 @@ private:
     ~CourseMap() override;
 
     [[nodiscard]] s16 findSectorBetweenSides(const EGG::Vector3f &pos,
-            MapdataCheckPoint *checkpoint, f32 &distanceRatio);
+            MapdataCheckPoint *checkpoint, f32 &distanceRatio, u32 flags);
     [[nodiscard]] s16 findSectorOutsideSector(const EGG::Vector3f &pos,
-            MapdataCheckPoint *checkpoint, f32 &distanceRatio);
+            MapdataCheckPoint *checkpoint, f32 &distanceRatio, u32 flags);
     [[nodiscard]] s16 findSectorRegional(const EGG::Vector3f &pos, MapdataCheckPoint *checkpoint,
-            f32 &distanceRatio);
+            f32 &distanceRatio, u32 flags);
     [[nodiscard]] s16 searchNextCheckpoint(const EGG::Vector3f &pos, s16 depth,
-            const MapdataCheckPoint *checkpoint, f32 &completion, bool playerIsForwards,
+            const MapdataCheckPoint *checkpoint, f32 &completion, u32 flags,
             bool useCache) const;
     [[nodiscard]] s16 searchPrevCheckpoint(const EGG::Vector3f &pos, s16 depth,
-            const MapdataCheckPoint *checkpoint, f32 &completion, bool playerIsForwards,
+            const MapdataCheckPoint *checkpoint, f32 &completion, u32 flags,
             bool useCache) const;
     void clearSectorChecked();
 

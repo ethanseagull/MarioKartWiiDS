@@ -46,6 +46,8 @@ public:
     // started: the race frame counter runs (countdown onward); HUD counters slide in.
     void stepWorld(const RaceItems&,Vec3 cameraBackward,bool started=true);
     void drawWorld(Renderer&,const RaceItems&,Vec3 viewer,unsigned tick);
+    // Team races and battles: the retail team item light on the local team's shells and bananas.
+    void drawTeamItemLights(Renderer&,const RaceItems&,Vec3 viewer,unsigned tick);
     // finishFrame: frames since the player finished (FINISH animation), or -1.
     // exitSlide: the race-end CtrlRaceBase hide slide 0..1, or -1.
     void drawOverlay(Renderer&,const RaceItems&,unsigned stage,unsigned timer,unsigned rank,unsigned lap,bool finished,unsigned tick,int finishFrame=-1,float exitSlide=-1.f,bool lookBack=false);
@@ -56,6 +58,10 @@ public:
     // the pose drawWorld(tick) draws; false without the model or its animation.
     bool bulletBody(unsigned racer,unsigned tick,Vec3& origin,Vec3& x,Vec3& y,Vec3& z);
     bool speedometer=false; // SELECT toggles it during a race
+    // DIAG A/B (main.cpp): no-blooper-light.txt (the Blooper's baked copy on every course),
+    // no-team-halos.txt (no team item light).
+    static inline bool blooperKartLight=true,teamHalos=true;
+    unsigned itemLightDraws=0; // DIAG: team item lights drawn this race
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
     std::unique_ptr<Impl> parked_;unsigned parkedKey_=0;bool reused_=false;

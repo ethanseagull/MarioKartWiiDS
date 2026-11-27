@@ -90,6 +90,10 @@
       "sha256": "6085feae82b35c35d3002daf3ba02664ed11888dcce0c02fa74a7f00b3daf86f",
       "bytes": 17437
     },
+    "mkw/flyover_info_assets.hpp": {
+      "sha256": "bc3d4f7031a971084029d327e0dbea1cbe4a61e99ffb347b1b82b84d69990dbe",
+      "bytes": 5595
+    },
     "mkw/garage.hpp": {
       "sha256": "471db12bb6e2c02d690698878713916b55df420ef8cbf9e2fbf586bfdb07d5b4",
       "bytes": 26727
@@ -178,6 +182,18 @@
       "sha256": "d1f402f616acf6d66292d44a66b11cc90ac3abc10c829bd296a420ac7f5b2de6",
       "bytes": 10877
     },
+    "mkw/mii_award_materials.hpp": {
+      "sha256": "bb3976018b6d765323fd4b79fab943377489c967624b2356726e8eedc253d14a",
+      "bytes": 604
+    },
+    "mkw/mii_garage.hpp": {
+      "sha256": "617cf81ca84e334aa243b24341fb6e75bb8ce9919a12c60817480a022a632bf6",
+      "bytes": 27038
+    },
+    "mkw/mii_voice.hpp": {
+      "sha256": "b68e4af149baeb7482f297aefd3dd8c341ee7750eaf11efa66c3d2abda2fa3c1",
+      "bytes": 2045
+    },
     "mkw/native_mii_icon_body.hpp": {
       "sha256": "7a8f28c68ec8f8f7f721820921f88c5f73393b9018ba0b6b5e59a593537ebfe1",
       "bytes": 6835
@@ -218,6 +234,10 @@
       "sha256": "36cc8eda542a8dc4ee2f66a150bc9a9c6369708b773a7bd839b00f77a0a8bb56",
       "bytes": 11403
     },
+    "mkw/race_standings_assets.hpp": {
+      "sha256": "730806010aee5bfaec25ae1d6018ca1bb8c29f95f000ffabf4ac8c98de638a30",
+      "bytes": 8541
+    },
     "mkw/race_voice_tables.hpp": {
       "sha256": "93c9b34b467e355c0fc64ebb8a97d3424d3d9093e68f3c04379a7d38e4933bda",
       "bytes": 22587
@@ -257,18 +277,6 @@
     "mkw/vehicle_rest_data.hpp": {
       "sha256": "18cd1d0658dccc2330ea76d221296638997050e4ff388e29acbb4160ef2be791",
       "bytes": 13698
-    },
-    "mkw/mii_garage.hpp": {
-      "sha256": "617cf81ca84e334aa243b24341fb6e75bb8ce9919a12c60817480a022a632bf6",
-      "bytes": 27038
-    },
-    "mkw/mii_award_materials.hpp": {
-      "sha256": "bb3976018b6d765323fd4b79fab943377489c967624b2356726e8eedc253d14a",
-      "bytes": 604
-    },
-    "mkw/mii_voice.hpp": {
-      "sha256": "b68e4af149baeb7482f297aefd3dd8c341ee7750eaf11efa66c3d2abda2fa3c1",
-      "bytes": 2045
     }
   }
 }

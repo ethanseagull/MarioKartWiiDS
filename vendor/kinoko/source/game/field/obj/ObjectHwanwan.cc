@@ -188,6 +188,14 @@ void ObjectHwanwan::checkFloorCollision() {
     if (director->findClosestCollisionEntry(&mask, static_cast<KCLTypeMask>(~0u))) {
         m_floorSound = (static_cast<u16>(director->closestCollisionEntry()->attribute) >> 8) & 7;
     }
+    // Presentation only (USA 0x806efe30): slippery road (type 1) of variant 1 outside state 1
+    // spawns rk_wanSmk at the pushed-out work position + (0, -600, 0).
+    if ((mask & KCL_TYPE_BIT(COL_TYPE_SLIPPERY_ROAD)) && m_currentStateId != 1 &&
+            director->findClosestCollisionEntry(&mask, KCL_TYPE_BIT(COL_TYPE_SLIPPERY_ROAD)) &&
+            director->closestCollisionEntry()->variant() == 1) {
+        m_smokePos = m_workPos + EGG::Vector3f(0.0f, -600.0f, 0.0f);
+        ++m_smokeSerial;
+    }
 }
 
 /// @addr{0x806EAAE8}

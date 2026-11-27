@@ -3,7 +3,27 @@
 
 #include "game/field/ObjectDirector.hh"
 
+#include "game/system/RaceConfig.hh"
+#include "game/system/RetailSwitches.hh"
+
 namespace Kinoko::Field {
+
+/// Retail Pillar / PillarC ctors (PAL 0x807fedc8, 0x807febc4): the fall frame is
+/// setting 0 at 150cc, setting 2 at 100cc and setting 3 at 50cc. Off
+/// (no-retail-class-rules.txt): setting 0 in every class.
+static u32 PillarFallStart(const System::MapdataGeoObj &params) {
+    if (!System::g_retailSwitches.classRules) {
+        return static_cast<u32>(params.setting(0));
+    }
+    switch (System::RaceConfig::Instance()->raceScenario().engineClass) {
+    case 1:
+        return static_cast<u32>(params.setting(2));
+    case 0:
+        return static_cast<u32>(params.setting(3));
+    default:
+        return static_cast<u32>(params.setting(0));
+    }
+}
 
 /// @addr{Inlined in 0x807FED80}
 ObjectPillarBase::ObjectPillarBase(const System::MapdataGeoObj &params) : ObjectKCL(params) {}
@@ -13,7 +33,7 @@ ObjectPillarBase::~ObjectPillarBase() = default;
 
 /// @addr{0x807FEB68}
 ObjectPillarC::ObjectPillarC(const System::MapdataGeoObj &params)
-    : ObjectCollidable(params), m_fallStart(static_cast<u32>(params.setting(0))) {}
+    : ObjectCollidable(params), m_fallStart(PillarFallStart(params)) {}
 
 /// @addr{0x807FFAE0}
 ObjectPillarC::~ObjectPillarC() = default;
@@ -37,7 +57,7 @@ void ObjectPillarC::calcCollisionTransform() {
 
 /// @addr{0x807FED80}
 ObjectPillar::ObjectPillar(const System::MapdataGeoObj &params)
-    : ObjectKCL(params), m_state(State::Upright), m_fallStart(static_cast<u32>(params.setting(0))),
+    : ObjectKCL(params), m_state(State::Upright), m_fallStart(PillarFallStart(params)),
       m_targetRotation(F_PI * static_cast<f32>(params.setting(1)) / 180.0f), m_initRot(rot().x),
       m_setupRot(EGG::Vector3f::zero) {
     m_base = EGG::egg_new<ObjectPillarBase>(params);

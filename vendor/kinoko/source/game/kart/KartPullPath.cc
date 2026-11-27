@@ -1,6 +1,10 @@
 #include "KartPullPath.hh"
 
+#include "game/kart/KartMove.hh"
+
 #include "game/system/CourseMap.hh"
+#include "game/system/RaceConfig.hh"
+#include "game/system/RetailSwitches.hh"
 
 #include <egg/geom/Plane.hh>
 
@@ -215,6 +219,12 @@ bool KartPullPath::calcArea() {
             }
             m_roadSpeedDecay = 0.9f + 0.001f * static_cast<f32>(area->param(0));
             m_maxPullSpeed = static_cast<f32>(area->param(1));
+            // Retail KartObjectManager flag 0x4 (set for course 20, PAL 0x8058fc80; read at
+            // 0x8059433c): DS Yoshi Falls scales the max pull speed by the engine-class rate.
+            if (System::g_retailSwitches.classRules &&
+                    System::RaceConfig::Instance()->raceScenario().course == Course::DS_Yoshi_Falls) {
+                m_maxPullSpeed *= move()->engineClassRate();
+            }
         }
     } else {
         m_areaId = -1;

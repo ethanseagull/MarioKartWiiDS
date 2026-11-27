@@ -1,4 +1,5 @@
 #include "mkw/console_model.hpp"
+#include "mkw/extra_memory.hpp"
 #include "mkw/env_animation.hpp"
 #include "mkw/road_sampler_policy.hpp"
 #include "mkw/course_phase_ranges.hpp"
@@ -56,6 +57,16 @@ GPU_CULLMODE cameraCull(GPU_CULLMODE mode,const C3D_Mtx& v){
 }
 void uploadProjection(int location,const C3D_Mtx& p){
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,location,&p);
+}
+// p (Mtx_PerspTilt's depth row: z = n/(n-f), w = f*n/(n-f)) with its far plane
+// `scale` times farther; x, y and w rows (stereo eye shifts included) unchanged.
+static C3D_Mtx fartherProjection(const C3D_Mtx& p,float scale){
+    C3D_Mtx q=p;const float z=p.r[2].z,w=p.r[2].w;
+    if(z==0.f||z==1.f)return q;
+    const float f=w/z,n=-z*f/(1.f-z),far=f*scale;
+    if(!(n>0.f)||!(f>n))return q;
+    q.r[2].z=n/(n-far);q.r[2].w=far*n/(n-far);
+    return q;
 }
 // The scene shaders transform positions by projection x modelView, held in
 // the projection uniform. Every writer keeps storing the plain projection
@@ -898,7 +909,10 @@ bool Renderer::init(){
     projectedWaterLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"projectedWater");
     playerShadowProjectLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"playerShadowProject");
     shadowCaptureLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"shadowCapture");
-    if(staticLightingLoc_<0||projectedWaterLoc_<0||playerShadowProjectLoc_<0||shadowCaptureLoc_<0)return fail();
+    shadowReceiverFadeLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"shadowReceiverFade");
+    shadowDepthLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"shadowDepth");
+    shadowFloorLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"shadowFloor");
+    if(staticLightingLoc_<0||projectedWaterLoc_<0||playerShadowProjectLoc_<0||shadowCaptureLoc_<0||shadowDepthLoc_<0||shadowFloorLoc_<0||shadowReceiverFadeLoc_<0)return fail();
     static const char* uvRows[]={"uvRow0","uvRow1","uvRow2","uvRow3"};
     for(int i=0;i<4;++i)uvRowLoc_[i]=shaderInstanceGetUniformLocation(program_.vertexShader,uvRows[i]);
     tintLoc_=shaderInstanceGetUniformLocation(program_.vertexShader,"tint");
@@ -1140,10 +1154,44 @@ bool Renderer::moveToVram(Texture& texture,std::size_t reserve,VramLeft* left){
     C3D_TexDelete(&t);t=moved;
     return true;
 }
+bool Renderer::moveToExtra(Texture& texture,VramLeft* left){
+    auto& t=texture.gpu;
+    const u32 at=reinterpret_cast<u32>(t.data);
+    if(!texture.ready||!t.data||(at>=OS_VRAM_VADDR&&at<OS_VRAM_VADDR+OS_VRAM_SIZE)||extraMemory::owns(t.data))return false;
+    const std::size_t bytes=C3D_TexCalcTotalSize(t.size,t.maxLevel);
+    const bool unitOneFourBit=texture.unitOne&&(t.fmt==GPU_ETC1||t.fmt==GPU_L4||t.fmt==GPU_A4);
+    void* block=unitOneFourBit?nullptr:extraMemory::alloc(bytes);
+    if(!block){
+        if(left){++left->count;left->bytes+=bytes;if(unitOneFourBit){++left->unitOne;left->unitOneBytes+=bytes;}}
+        return false;
+    }
+    // The LINEAR copy was flushed when it was loaded; the copy engine reads it.
+    C3D_SyncTextureCopy(static_cast<u32*>(t.data),0,static_cast<u32*>(block),0,u32(bytes),8);
+    // Check the copy (Azahar, or a console where the copy engine can't reach
+    // the region): any difference keeps LINEAR and stops using the tier.
+    GSPGPU_InvalidateDataCache(block,u32(bytes));
+    bool same=!std::memcmp(block,t.data,bytes);
+    // DIAG extra-cpu-copy.txt: copy with the CPU instead when the copy engine
+    // can't (Azahar: its GPU still can't see the region, so pictures are wrong;
+    // it exercises the allocator, frees and race release).
+    if(!same&&extraCpuCopy){
+        std::memcpy(block,t.data,bytes);GSPGPU_FlushDataCache(block,u32(bytes));
+        GSPGPU_InvalidateDataCache(block,u32(bytes));same=!std::memcmp(block,t.data,bytes);
+    }
+    if(!same){
+        extraMemory::free(block);extraMemory::markBroken();
+        if(left){++left->count;left->bytes+=bytes;}
+        return false;
+    }
+    extraMemory::remember(block);
+    C3D_Tex moved=t;moved.data=block;
+    C3D_TexDelete(&t);t=moved;
+    return true;
+}
 bool Renderer::moveToLinear(Texture& texture){
     auto& t=texture.gpu;
     const u32 at=reinterpret_cast<u32>(t.data);
-    if(!texture.ready||!t.data||!(at>=OS_VRAM_VADDR&&at<OS_VRAM_VADDR+OS_VRAM_SIZE))return false;
+    if(!texture.ready||!t.data||!((at>=OS_VRAM_VADDR&&at<OS_VRAM_VADDR+OS_VRAM_SIZE)||extraMemory::owns(t.data)))return false;
     C3D_Tex moved{};
     const C3D_TexInitParams params{t.width,t.height,t.maxLevel,t.fmt,GPU_TEX_2D,false};
     if(!C3D_TexInitWithParams(&moved,nullptr,params))return false;
@@ -1151,6 +1199,12 @@ bool Renderer::moveToLinear(Texture& texture){
     // The GX copy writes LINEAR behind the CPU's cache; drop any stale lines first.
     GSPGPU_InvalidateDataCache(moved.data,u32(bytes));
     C3D_SyncTextureCopy(static_cast<u32*>(t.data),0,static_cast<u32*>(moved.data),0,u32(bytes),8);
+    // From the extra memory, check the copy (the copy engine reached it in the
+    // Nov 8 console test; Azahar's can't): a mismatch copies with the CPU.
+    if(extraMemory::owns(t.data)){
+        GSPGPU_InvalidateDataCache(moved.data,u32(bytes));GSPGPU_InvalidateDataCache(t.data,u32(bytes));
+        if(std::memcmp(moved.data,t.data,bytes)){std::memcpy(moved.data,t.data,bytes);GSPGPU_FlushDataCache(moved.data,u32(bytes));}
+    }
     moved.param=t.param;moved.border=t.border;moved.lodParam=t.lodParam;
     C3D_TexDelete(&t);t=moved;texture.raceVram=false;
     return true;
@@ -1185,6 +1239,7 @@ void Renderer::swapFrameBuffers(){
     if(retailTextureAlt_[0].data)for(unsigned which=0;which<2;++which){
         std::swap(retailTexture_[which],retailTextureAlt_[which]);std::swap(retailTextureCurrent_[which],retailTextureAltCurrent_[which]);
     }
+    std::swap(shadowRing_,shadowRingAlt_);
 }
 void Renderer::waitForGpu(){
     if(!deviceReady_)return;
@@ -1228,6 +1283,7 @@ void Renderer::shutdown(){
     programReady_=false;program_={};
     if(shader_)DVLB_Free(shader_);
     shader_=nullptr;
+    freePlayerShadow();
     if(bottomTarget_)C3D_RenderTargetDelete(bottomTarget_);
     bottomTarget_=nullptr;
     freeBloom();freeStadiumScreen();
@@ -1290,6 +1346,7 @@ void Renderer::beginNow(const C3D_Mtx& view,const C3D_Mtx& projection,bool sync,
     eye_=0;
     // The GPU reads nothing of this buffer's last frame any more (see swapFrameBuffers).
     facingUsed_=facingFlushed_=0;for(auto& l:facingLists_)l.model=nullptr;
+    shadowRingUsed_=0;
     // Dad's capture cadence: one sample per two rendered frames, independently
     // of simulation ticks, eye replays and the lower-screen intro pass.
     stadiumCaptureFrame_=stadiumRequested_&&((stadiumRenderFrames_++&1u)==0);
@@ -1715,6 +1772,7 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
     const uint32_t animationFrame=execFrame_,additiveColor=execAdditive_&0xffffff00u;
     const unsigned inkBlack=execAdditive_&InkBlack;
     if(diagCollapse_){C3D_Mtx point;Mtx_Zeros(&point);point.r[3].w=1;uploadProjection(projectionLoc_,point);}
+    else if(backdrop&&courseLighting_&&skyFar)uploadProjection(projectionLoc_,fartherProjection(projection_,8.f));
     else uploadProjection(projectionLoc_,projection_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,modelViewLoc_,&mv);
     C3D_BoolUnifSet(GPU_VERTEX_SHADER,staticLightingLoc_,model.staticLightingBaked);
@@ -2810,9 +2868,9 @@ void Renderer::shadowVolumesNow(const ShadowVolume* volumes,unsigned count,float
         if(perVolume){++volumeRectFrames;volumeRectsDrawn+=rectCount;volumeRectSaved+=uint64_t(area-sum);}
     }
     // No volume's own rectangle on screen: no pixel holds a count.
-    if(perVolume){if(rectCount)shadeRectsNow(1.f-float(shade)/255.f,0,rects,rectCount);}
+    if(perVolume){if(rectCount)shadeRectsNow(1.f-float(shade)/255.f,shadowUnion_?4:0,rects,rectCount);}
     else if(!bounded||stereoRect||(rect[2]>rect[0]&&rect[3]>rect[1]))
-        screenFadeNow(1.f-float(shade)/255.f,false,false,0,bounded?rect:nullptr);
+        screenFadeNow(1.f-float(shade)/255.f,false,false,shadowUnion_?4:0,bounded?rect:nullptr);
     // The fullscreen shade temporarily binds an orthographic projection.
     // Consecutive volume groups must return to this eye's perspective.
     uploadProjection(projectionLoc_,projection_);
@@ -3216,6 +3274,22 @@ Vertex* Renderer::reserveOverlay(int count){
     Vertex* vertices=overlay_+(bottomPass_?kOverlayCapacity:0)+overlayCount_;
     overlayCount_+=count;
     return vertices;
+}
+void Renderer::shadowUnionNow(bool active){
+    flushSprites();resetMaterialUniforms();clearEnvironmentUvNow();
+    C3D_StencilTest(true,GPU_ALWAYS,0,0xff,0xff);
+    C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_ZERO);
+    auto* attr=C3D_GetAttrInfo();AttrInfo_Init(attr);
+    AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,1,GPU_FLOAT,3);
+    AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
+    screenFadeNow(active?0.f:1.f,false,false,active?1:2);
+    shadowUnion_=active;
+    C3D_StencilTest(false,GPU_ALWAYS,0,0xff,0);
+    C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_KEEP);
+    uploadProjection(projectionLoc_,projection_);sceneDepthMap(projection_);
+    C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_ALL);
+    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ONE_MINUS_SRC_ALPHA);
+    spriteStateReady_=false;
 }
 void Renderer::cinemaBarsNow(float topHeight,float bottomHeight,float opacity){
     flushSprites();

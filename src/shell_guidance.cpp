@@ -157,7 +157,7 @@ void RaceItems::launchStraight(ItemActor& a,const ItemRacer& r){
     a.lastDirection=a.flightDirection;
     // 0x807a6880: thrown on a half-pipe ramp or above one, the slide timer starts at 30.
     a.guidance.slopeTicks=r.halfPipe?30:0;
-    a.airFrames=5;a.airborne=false;
+    a.airFrames=5;a.airborne=false;a.guidance.fallBoundary=false;
 }
 void RaceItems::launchShell(ItemActor& a,unsigned player){
     auto& s=a.guidance;const auto& r=racers_[player];const bool blue=a.kind==ItemKind::BlueShell;
@@ -181,15 +181,26 @@ void RaceItems::launchShell(ItemActor& a,unsigned player){
     s.launchTicks=blue?20:45;s.visualY=a.position.y;s.approachSpeed=260;
     if(blue){a.target=int8_t(target);s.ownerLed=target==a.owner;if(target>=0){s.lastTarget=racers_[target].position;s.leaderMask|=uint16_t(1u<<target);}if(!s.hasRoute){a.travelSpeed=85+(forward?speed:-speed);a.velocity=a.flightDirection*a.travelSpeed;s.approachSpeed=length(a.velocity);}}
 }
+namespace {
+constexpr uint32_t ShellSolidFall=1u<<0x0a,ShellFallBoundary=1u<<0x10,ShellFloorNoSolidFall=0x20E80BFF;
+// Base calc 0x80796524..0x8079667c for a shell (it never lands): solid-fall KCL starts a
+// 60-frame countdown; frames on any other floor pause it.
+bool shellSolidFallExpired(ItemActor& a,bool floor,uint32_t types){
+    if(floor&&(types&ShellSolidFall)&&!a.reflected&&!a.solidFallTicks)a.solidFallTicks=60;
+    return a.solidFallTicks&&!(types&ShellFloorNoSolidFall)&&--a.solidFallTicks==0;
+}
+}
 void RaceItems::shellTerrain(ItemActor& a,ItemWorldQuery query,bool blue,bool route,bool approach,bool wallBreak){
     auto& s=a.guidance;ItemSurface surface=query?query(a.previous,a.position,a.terrainRadius):ItemSurface{};
     // 29a558 / 29b494: cannon KCL destroys ordinary shells; object ID 5
     // (Spiny) is explicitly exempt. It follows the authored airborne route.
     if(surface.cannon&&!blue){a.active=false;return;}
-    if(surface.kill&&!blue){a.active=false;return;}
+    // 0x807a65b0: a fall boundary only marks the shell (see ShellGuidance::fallBoundary).
+    if(surface.floorTypes&ShellFallBoundary)s.fallBoundary=true;
     if(blue){a.position.y+=std::max(0.f,surface.correction.y);}else a.position+=surface.correction+surface.floorMotion;
     bool floor=length(surface.floorNormal)>.1f;
     if(floor&&!blue)a.floorContact=true;
+    if(!blue&&shellSolidFallExpired(a,floor,surface.floorTypes)){a.active=false;return;}
     if(floor){s.up=normalized(surface.floorNormal);if(s.up.y<.00300002f)s.slopeTicks=30;else if(s.slopeTicks)--s.slopeTicks;
         if(!route){
             if(approach)a.velocity=tangent(a.velocity,s.up);
@@ -212,6 +223,8 @@ void RaceItems::shellTerrain(ItemActor& a,ItemWorldQuery query,bool blue,bool ro
     else{a.velocity.y-=a.velocity.y>0?4.2f:2.f;
         if(blue){if(a.velocity.y>0)a.velocity.y*=a.velocity.y>100?.125f:.9f;else a.velocity.y=std::max(-100.f,a.velocity.y);}
     }
+    // 0x807a0444: after a homing step, a fall-boundary mark sends the Red straight (state 6).
+    if(approach&&!blue&&s.fallBoundary&&s.pending<0){a.velocity+=s.homing;s.homing={};s.pending=6;a.target=-1;resumeStraight(a);}
 }
 namespace {
 constexpr uint32_t KclSolidFall=1u<<0x0a,KclFallBoundary=1u<<0x10,KclHalfPipeRamp=1u<<0x13;
@@ -311,11 +324,9 @@ void RaceItems::straightShell(ItemActor& a,ItemWorldQuery query,float targetSpee
     else if(a.velocity.y>0){a.velocity.y-=4.2f;if(a.airborne)a.velocity.y*=a.velocity.y>100?.125f:.9f;}
     else{a.velocity.y-=2.f;if(a.airborne)a.velocity.y=std::max(a.velocity.y,-100.f);}
     if(floor)a.floorContact=true;
-    // Base calc 0x80796524..0x8079667c: solid-fall KCL is a floor that starts a 60-frame
-    // countdown; frames on any other floor pause it. A fall boundary removes the item.
-    if(floor&&(q.floorTypes&KclSolidFall)&&!a.reflected&&!a.solidFallTicks)a.solidFallTicks=60;
-    if(a.solidFallTicks&&!(q.floorTypes&KclFloorNoSolidFall)&&--a.solidFallTicks==0){a.active=false;return;}
-    if(q.kill&&(!q.floorTypes||(q.floorTypes&KclFallBoundary))){a.active=false;return;}
+    // 0x807a6bd4: a fall boundary only marks the shell; it is never removed for it.
+    if(q.collided&&(q.floorTypes&ShellFallBoundary))s.fallBoundary=true;
+    if(shellSolidFallExpired(a,floor,q.floorTypes)){a.active=false;return;}
 }
 void RaceItems::moveShellRoute(ItemActor& a,ItemWorldQuery query,int target,bool blue){
     auto& s=a.guidance;const Vec3* targetPos=target>=0?&racers_[target].position:nullptr;

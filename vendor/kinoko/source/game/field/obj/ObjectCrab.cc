@@ -178,7 +178,7 @@ void ObjectCrab::startDamage() {
             (m_hitSource - up * m_hitSource.dot(up));
     if (direction.squaredLength() <= 1.1920928955078125e-7f)
         direction = -transform().base(2);
-    direction.normalise();
+    direction.normalise2(); // USA 80880680: DOL 80242cb0
     m_hitBasis.makeOrthonormalBasisLocal(direction, up);
     EGG::Matrix34f launch;
     launch.setAxisRotation(-0.78f, m_hitBasis.base(0));

@@ -1,5 +1,7 @@
 #include "KartParamFileManager.hh"
 
+#include "game/system/RetailSwitches.hh"
+
 namespace Kinoko::Kart {
 
 /// @addr{0x80591C9C}
@@ -26,6 +28,23 @@ void KartParamFileManager::init() {
 
 EGG::RamStream KartParamFileManager::getDriverStream(Character character) const {
     s32 idx = -1;
+    // Retail Kart::ComputeStats (PAL 0x80592100..0x80592160): characters past Rosalina use
+    // entry 23 + (id - 23) / 6, and quotients above 2 fall back to 23. With the retail ids
+    // this is not one entry per Mii size: e.g. Large Mii Outfit C Female (41) and the three
+    // plain Mii ids use entry 23. Off (no-retail-mii-stats.txt): one entry per Mii size.
+    if (System::g_retailSwitches.miiStats) {
+        idx = static_cast<s32>(character);
+        if (idx > 23) {
+            s32 q = (idx - 23) / 6;
+            if (q > 2) {
+                q = 0;
+            }
+            idx = 23 + q;
+        }
+        auto *file = reinterpret_cast<ParamFile<KartParam::Stats> *>(m_driverParam.file);
+        ASSERT(file);
+        return EGG::RamStream(&file->params[idx], sizeof(KartParam::Stats));
+    }
     switch (character) {
     case Character::Small_Mii_Outfit_A_Male:
     case Character::Small_Mii_Outfit_A_Female:

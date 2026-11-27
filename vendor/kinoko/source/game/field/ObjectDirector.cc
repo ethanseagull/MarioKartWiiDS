@@ -32,6 +32,7 @@ namespace Kinoko::Field {
 /// @addr{0x8082A2B4}
 void ObjectDirector::init() {
     m_initRandom = System::RaceManager::Instance()->random().state();
+    m_initRandom2 = System::RaceManager::Instance()->random2().state();
     for (auto *&obj : m_objects) {
         obj->init();
         obj->calcModel();
@@ -89,6 +90,7 @@ void ObjectDirector::reinitForRace() {
     // draw from it in init() and while running (bats, seagulls, Goombas, Chain Chomps,
     // fire snakes, Boos), and calcEngines advances it every preview frame.
     System::RaceManager::Instance()->random().setState(m_initRandom);
+    System::RaceManager::Instance()->random2().setState(m_initRandom2);
     // Cones add themselves to the managed list in init(); the others do so when built.
     size_t kept = 0;
     for (size_t i = 0; i < m_managedObjects.size(); ++i) {
@@ -99,6 +101,7 @@ void ObjectDirector::reinitForRace() {
     while (m_managedObjects.size() > kept) {
         m_managedObjects.pop_back();
     }
+    StateManager::s_reinitActive = true;
     for (auto *&obj : m_objects) {
         if (ReinitSkipped(obj->id())) {
             continue;
@@ -110,6 +113,7 @@ void ObjectDirector::reinitForRace() {
     }
 
     ObjectDrivableDirector::Instance()->init();
+    StateManager::s_reinitActive = false;
 }
 
 /// @addr{0x8082A8F4}

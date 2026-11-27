@@ -16,6 +16,10 @@
 
 namespace Kinoko::Kart {
 
+/// Retail slipstream acceleration (PAL 0x8057ae30, USA 0x805745cc) on every course; false (the
+/// frontend's no-retail-slipstream-accel.txt) keeps 1.2.2's acceleration (none of its own).
+inline bool g_retailSlipstreamAccel = true;
+
 /// @brief Responsible for reacting to player inputs and moving the kart.
 /// @nosubgrouping
 class KartMove : protected KartObjectProxy {
@@ -468,6 +472,10 @@ public:
         return m_hardSpeedLimit;
     }
 
+    [[nodiscard]] f32 engineClassRate() const {
+        return m_engineClassRate;
+    }
+
     [[nodiscard]] const EGG::Vector3f &smoothedUp() const {
         return m_smoothedUp;
     }
@@ -557,6 +565,11 @@ public:
 
     [[nodiscard]] KartScale *kartScale() const {
         return m_kartScale;
+    }
+
+    /// Retail Movement +0xec (presentation readers: AI::Character 0x8073684c).
+    [[nodiscard]] s16 slipstreamTimer() const {
+        return m_slipstreamTimer;
     }
 
     [[nodiscard]] KartBurnout &burnout() {

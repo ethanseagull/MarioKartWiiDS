@@ -37,6 +37,9 @@ public:
             s16 reactionOnItem, s16 reactionOnObj, EGG::Vector3f &) override;
     void onGlobalItemCollision(s16, s16 reactionOnObj) override;
     const EGG::Matrix34f &modelTransform() const { return m_modelTransform; }
+    /// Presentation only: rk_wanSmk spawns (USA 0x806efe30) and the last one's position.
+    u32 smokeSerial() const { return m_smokeSerial; }
+    const EGG::Vector3f &smokePos() const { return m_smokePos; }
     f32 animationFrame() const { return m_animationFrame; }
 
 private:
@@ -54,6 +57,8 @@ private:
 
     const EGG::Vector3f m_initPos;
     EGG::Vector3f m_workPos;
+    u32 m_smokeSerial = 0;                           ///< Presentation only (rk_wanSmk)
+    EGG::Vector3f m_smokePos = EGG::Vector3f::zero; ///< Presentation only
     EGG::Vector3f m_extVel;
     EGG::Vector3f m_bounceVel;
     EGG::Vector3f m_tangent;

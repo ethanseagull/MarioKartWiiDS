@@ -76,6 +76,7 @@ ObjectWanwan::~ObjectWanwan() = default;
 
 /// @addr{0x806E4B9C}
 void ObjectWanwan::init() {
+    m_smokeArmed = true; // presentation only (retail +0x4d9)
     resetStates();
     setPos(m_initPos);
     m_chainAttachPos = m_initPos;
@@ -154,6 +155,7 @@ void ObjectWanwan::enterWait() {
 
 /// @addr{0x806E6EB0}
 void ObjectWanwan::enterAttack() {
+    m_smokeArmed = true; // presentation only (USA 0x806d5ec8)
     m_vel.x = 0.0f;
     m_vel.z = 0.0f;
     m_accel.x = 0.0f;
@@ -326,6 +328,19 @@ void ObjectWanwan::calcCollision() {
 
     if (info.floorDist > -std::numeric_limits<f32>::min()) {
         m_targetUp = info.floorNrm;
+    }
+
+    // Presentation only (USA 0x806d4cf8 / 0x806d4d0c -> 0x806d7928): a floor touch on off-road
+    // variant 0 spawns rk_wanSmk at the pushed-out position + (0, -600, 0), every such frame
+    // outside an attack, once per lunge in one (+0x4d9: set by init and enterAttack, cleared by
+    // the spawn). Retail's knocked-away branch (+0x4f8) has no Kinoko counterpart.
+    if ((mask & KCL_TYPE_BIT(COL_TYPE_OFF_ROAD)) &&
+            colDir->findClosestCollisionEntry(&mask, KCL_TYPE_BIT(COL_TYPE_OFF_ROAD)) &&
+            colDir->closestCollisionEntry()->variant() == 0 &&
+            (m_currentStateId != 1 || m_smokeArmed)) {
+        m_smokeArmed = false;
+        m_smokePos = pos() + EGG::Vector3f(0.0f, -600.0f, 0.0f);
+        ++m_smokeSerial;
     }
 
     m_accel += GRAVITY;

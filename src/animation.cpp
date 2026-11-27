@@ -111,7 +111,7 @@ bool DriverAnimation::prepareLitSkinning(Model& model){
 int DriverAnimation::find(const char* name)const{if(name)for(unsigned i=0;i<count_;++i)if(!std::strcmp(name,clips_[i].name))return i;return -1;}
 int DriverAnimation::face(const char* name)const{if(name)for(unsigned i=0;i<faceCount_;++i)if(!std::strcmp(name,faces_[i].name))return i;return -1;}
 namespace {
-struct KeptBank {std::string path;uint8_t* data;size_t size;bool linear;};
+struct KeptBank {std::string path;uint8_t* data;size_t size;bool linear;std::vector<float> normals,scales;unsigned keyBytes=84;bool keyShort=false;};
 struct KeptBanks {
     LightLock lock;bool on=false;unsigned reused=0;std::vector<KeptBank> banks;
     KeptBanks(){LightLock_Init(&lock);}
@@ -123,16 +123,20 @@ void DriverAnimation::releaseData(){
     if(!data_)return;
     auto& k=kept();LightLock_Lock(&k.lock);
     const bool keep=k.on&&!path_.empty();
-    if(keep)k.banks.push_back({path_,data_,size_,dataLinear_});
+    if(keep)k.banks.push_back({path_,data_,size_,dataLinear_,std::move(fixedNormals_),std::move(keyScale_),keyBytes_,keyShort_});
     LightLock_Unlock(&k.lock);
     if(!keep)freeBank(data_,dataLinear_);
     data_=nullptr;path_.clear();size_=0;
+    fixedNormals_.clear();keyScale_.clear();keyA_.clear();keyB_.clear();keyBytes_=84;keyShort_=false;
 }
 bool DriverAnimation::takeKept(const char* path,size_t& size){
     auto& k=kept();LightLock_Lock(&k.lock);
     bool found=false;
     for(auto it=k.banks.begin();it!=k.banks.end();++it)if(it->path==path){
-        data_=it->data;dataLinear_=it->linear;size=it->size;k.banks.erase(it);++k.reused;found=true;break;
+        data_=it->data;dataLinear_=it->linear;size=it->size;
+        // A compact opponent bank (load): its layout parameters come with it.
+        fixedNormals_=std::move(it->normals);keyScale_=std::move(it->scales);keyBytes_=it->keyBytes;keyShort_=it->keyShort;
+        k.banks.erase(it);++k.reused;found=true;break;
     }
     LightLock_Unlock(&k.lock);
     return found;
@@ -204,11 +208,72 @@ bool DriverAnimation::load(const char* path,const Model& model){
         ok=std::fread(data_,1,size,f)==size;std::fclose(f);
     }
     auto u32=[](const uint8_t* p){uint32_t v;std::memcpy(&v,p,4);return v;};
-    // DIAG: a .dsku (tools/pack_unlit_banks.py) is a DSKM whose keyframes keep
-    // only their 3x4 position matrices, plus one set of normal matrices: the
-    // first clip's first frame, the only one an opponent reads (freezeLighting).
-    // Rebuild the DSKM layout with those normals in every frame.
-    if(ok&&size>=32&&!std::memcmp(data_,"DSKU",4)){
+    // A .dsku (tools/pack_unlit_banks.py) is a DSKM whose keyframes keep only
+    // their 3x4 position matrices, plus one set of normal matrices: the first
+    // clip's first frame, the only one an opponent reads (freezeLighting).
+    // Kept compact: 3x4 keyframes and that one normal set (fixedNormals_), which
+    // evaluate() puts in every frame's palette as the old expansion did (the same
+    // palette, bit for bit), as s16 with per-bone scales (near: worst vertex
+    // error 0.0066 units over 30 banks; the user judged the frames, Nov 23).
+    // DIAG files: no-compact-banks.txt (the old expansion), no-short-banks.txt.
+    bool compactKeys=!fixedNormals_.empty();   // a kept compact bank
+#ifndef MKW_RELEASE
+    static const bool expandCompact=[]{FILE* f=std::fopen("sdmc:/3ds/MKWiiDS/no-compact-banks.txt","rb");if(f)std::fclose(f);return f!=nullptr;}();
+    static const bool noShortKeys=[]{FILE* f=std::fopen("sdmc:/3ds/MKWiiDS/no-short-banks.txt","rb");if(f)std::fclose(f);return f!=nullptr;}();
+#else
+    constexpr bool expandCompact=false,noShortKeys=false;
+#endif
+    if(ok&&!expandCompact&&size>=32&&!std::memcmp(data_,"DSKU",4)){
+        uint8_t* compact=data_;const bool compactLinear=dataLinear_;const size_t compactSize=size;data_=nullptr;
+        auto release=[&]{if(compactLinear)linearFree(compact);else std::free(compact);};
+        const uint32_t version=u32(compact+4),vertexCount=u32(compact+8),matrixCount=u32(compact+12),clipCount=u32(compact+16),shapeCount=u32(compact+20);
+        const size_t head=(version>=5?32:28)+size_t(vertexCount)*28+size_t(shapeCount)*8;
+        bool valid=version>=2&&version<=8&&matrixCount&&matrixCount<=128&&clipCount&&clipCount<=64&&shapeCount<=64&&vertexCount<=65536&&
+                   head+size_t(matrixCount)*36<=compactSize;
+        const bool shortKeys=!noShortKeys;const unsigned outKey=shortKeys?24u:48u;
+        size_t at=head+size_t(matrixCount)*36,out=head;
+        std::vector<float> scales(shortKeys?size_t(matrixCount)*2:0,0.f);
+        for(unsigned c=0;valid&&c<clipCount;++c){
+            if(at+44>compactSize){valid=false;break;}
+            const uint32_t frames=u32(compact+at+40);if(!frames||frames>2000){valid=false;break;}
+            const size_t frameIn=size_t(matrixCount)*48+shapeCount*4;
+            if(at+44+size_t(frames)*frameIn>compactSize){valid=false;break;}
+            if(shortKeys)for(uint32_t f=0;f<frames&&valid;++f){
+                const float* m=reinterpret_cast<const float*>(compact+at+44+size_t(f)*frameIn);
+                for(unsigned b=0;b<matrixCount*12;++b){
+                    const float v=std::fabs(m[b]);if(!std::isfinite(v)){valid=false;break;}
+                    float& s=scales[(b/12)*2+(b%12%4==3)];s=std::max(s,v);
+                }
+            }
+            at+=44+size_t(frames)*frameIn;out+=44+size_t(frames)*(size_t(matrixCount)*outKey+shapeCount*4);
+        }
+        const size_t full=valid?out+(compactSize-at):0;
+        if(!valid||full>12*1024*1024||!allocateBank(full)){release();data_=nullptr;reset();{driverBankFailure="compact bank";return false;}}
+        for(auto& s:scales)s/=32767.f;
+        fixedNormals_.assign(reinterpret_cast<const float*>(compact+head),reinterpret_cast<const float*>(compact+head)+size_t(matrixCount)*9);
+        uint8_t* w=data_;const uint8_t* in=compact+head+size_t(matrixCount)*36;
+        std::memcpy(w,"DSKM",4);std::memcpy(w+4,compact+4,head-4);w+=head;
+        for(unsigned c=0;c<clipCount;++c){
+            const uint32_t frames=u32(in+40);std::memcpy(w,in,44);w+=44;in+=44;
+            for(uint32_t f=0;f<frames;++f){
+                if(shortKeys){
+                    const float* m=reinterpret_cast<const float*>(in);int16_t* q=reinterpret_cast<int16_t*>(w);
+                    for(unsigned b=0;b<matrixCount*12;++b){
+                        const float s=scales[(b/12)*2+(b%12%4==3)];
+                        q[b]=s>0.f?int16_t(std::lrintf(std::clamp(m[b]/s,-32767.f,32767.f))):int16_t(0);
+                    }
+                }else std::memcpy(w,in,size_t(matrixCount)*48);
+                w+=size_t(matrixCount)*outKey;in+=size_t(matrixCount)*48;
+                std::memcpy(w,in,shapeCount*4);w+=shapeCount*4;in+=shapeCount*4;
+            }
+        }
+        std::memcpy(w,in,size_t(compact+compactSize-in));
+        size=full;release();
+        compactKeys=true;keyShort_=shortKeys;keyScale_=std::move(scales);keyBytes_=outKey;
+    }
+    if(!compactKeys){keyBytes_=84;keyShort_=false;fixedNormals_.clear();keyScale_.clear();}
+    else if(keyShort_){keyA_.assign(size_t(u32(data_+12))*12,0.f);keyB_.assign(size_t(u32(data_+12))*12,0.f);}
+    if(ok&&expandCompact&&size>=32&&!std::memcmp(data_,"DSKU",4)){
         uint8_t* compact=data_;const bool compactLinear=dataLinear_;const size_t compactSize=size;data_=nullptr;
         auto release=[&]{if(compactLinear)linearFree(compact);else std::free(compact);};
         const uint32_t version=u32(compact+4),vertexCount=u32(compact+8),matrixCount=u32(compact+12),clipCount=u32(compact+16),shapeCount=u32(compact+20);
@@ -259,7 +324,7 @@ bool DriverAnimation::load(const char* path,const Model& model){
         if(cursor+44>size){reset();{driverBankFailure="bank format";return false;}}auto& c=(bank?faces_:clips_)[i];std::memcpy(c.name,data_+cursor,32);c.name[31]=0;
         c.duration=u32(data_+cursor+32);c.loop=u32(data_+cursor+36);c.count=u32(data_+cursor+40);cursor+=44;c.data=data_+cursor;
         if(!c.count||c.count>2000||c.duration!=c.count){reset();{driverBankFailure="bank format";return false;}}
-        cursor+=size_t(c.count)*(bank?shapes_*4:matrices_*84+shapes_*4);if(cursor>size){reset();{driverBankFailure="bank format";return false;}}
+        cursor+=size_t(c.count)*(bank?shapes_*4:matrices_*keyBytes_+shapes_*4);if(cursor>size){reset();{driverBankFailure="bank format";return false;}}
     }
     if(u32(data_+4)>=3){
         if(cursor+12>size||std::memcmp(data_+cursor,"HLOC",4)){reset();{driverBankFailure="bank format";return false;}}
@@ -380,17 +445,36 @@ bool inversePair(float* out,const float* m){
     return true;
 }
 }
+void DriverAnimation::keyPair(const Clip& c,unsigned a,unsigned b,const float*& x,const float*& y,unsigned& key,const unsigned* bones,unsigned boneCount){
+    const size_t stride=size_t(matrices_)*keyBytes_+shapes_*4;
+    const uint8_t* fa=c.data+a*stride;const uint8_t* fb=c.data+b*stride;
+    key=keyBytes_==84?21:12;
+    if(!keyShort_){x=reinterpret_cast<const float*>(fa);y=reinterpret_cast<const float*>(fb);return;}
+    auto decode=[&](const uint8_t* frame,unsigned bone,float* out){
+        int16_t q[12];std::memcpy(q,frame+size_t(bone)*24,24);
+        const float r=keyScale_[bone*2],p=keyScale_[bone*2+1];
+        for(unsigned i=0;i<12;++i)out[i]=float(q[i])*(i%4==3?p:r);
+    };
+    if(bones)for(unsigned k=0;k<boneCount;++k){decode(fa,bones[k],keyA_.data()+bones[k]*12);decode(fb,bones[k],keyB_.data()+bones[k]*12);}
+    else for(unsigned bone=0;bone<matrices_;++bone){decode(fa,bone,keyA_.data()+bone*12);decode(fb,bone,keyB_.data()+bone*12);}
+    x=keyA_.data();y=keyB_.data();
+}
 void DriverAnimation::evaluate(const Clip& c,unsigned a,unsigned b,float t,unsigned tick,float blend,bool simulateBraids){
-    const unsigned stride=matrices_*84+shapes_*4;
-    auto x=reinterpret_cast<const float*>(c.data+a*stride);auto y=reinterpret_cast<const float*>(c.data+b*stride);
+    const float* x;const float* y;unsigned key;keyPair(c,a,b,x,y,key);
     if(gpu_&&!lookCount_&&!hairClipCount_&&!hasBraids_&&!rigid()&&blend>=1.f){
         // GPU skinning consumes only the affine rows. Hair composition needs
         // the normal pair, so keep its full path (and all transition math).
         for(unsigned bone=0;bone<matrices_;++bone)for(unsigned i=0;i<12;++i){
-            const unsigned at=bone*21+i;
-            palette_[at]=x[at]+(y[at]-x[at])*t;
+            const unsigned at=bone*key+i;
+            palette_[bone*21+i]=x[at]+(y[at]-x[at])*t;
         }
-    }else for(unsigned i=0;i<matrices_*21;++i)palette_[i]=x[i]+(y[i]-x[i])*t;
+    }else if(key==21)for(unsigned i=0;i<matrices_*21;++i)palette_[i]=x[i]+(y[i]-x[i])*t;
+    else for(unsigned bone=0;bone<matrices_;++bone){
+        // A compact opponent bank: the .dsku's normal set in every frame.
+        float* out=palette_.data()+bone*21;const float* p=x+bone*12;const float* q=y+bone*12;
+        for(unsigned i=0;i<12;++i)out[i]=p[i]+(q[i]-p[i])*t;
+        std::memcpy(out+12,fixedNormals_.data()+bone*9,36);
+    }
     applyHair(c,tick);
     if(blend<1)for(unsigned i=0;i<matrices_;++i){float result[21];blendPosePair(result,previousPalette_.data()+i*21,palette_.data()+i*21,blend);std::memcpy(palette_.data()+i*21,result,sizeof result);}
     if(lookCount_){
@@ -513,7 +597,7 @@ bool DriverAnimation::apply(Model& model,int clip,float frame,unsigned tick,int 
         std::swap(cachedVertices_,cachedVertices2_);++renderMetrics.poseReuses;return poseVisible();
     }
     const bool again=exactShare&&cachedVertices_;
-    unsigned stride=matrices_*84+shapes_*4;
+    const size_t stride=size_t(matrices_)*keyBytes_+shapes_*4;
     if(!again){evaluate(c,a,b,t,tick,blend);poseBoundsValid_=false;paletteApplied_=true;}
     if(!poseVisible()){cachedSettled_=false;return false;}
     if(again)++renderMetrics.poseReuses;else ++renderMetrics.poseEvaluations;
@@ -521,7 +605,7 @@ bool DriverAnimation::apply(Model& model,int clip,float frame,unsigned tick,int 
     cachedVertices2_=again?cachedVertices_:nullptr;
     cachedVertices_=model.vertices;cachedClip_=clip;cachedFrame_=frame;
     cachedExpression_=expression;cachedExpressionFrame_=faceFrame;cachedTick_=tick;cachedSettled_=blend>=1;
-    const auto shown=reinterpret_cast<const uint32_t*>(c.data+a*stride+matrices_*84);
+    const auto shown=reinterpret_cast<const uint32_t*>(c.data+a*stride+size_t(matrices_)*keyBytes_);
     const int32_t* textures=nullptr;
     if(expression>=0&&unsigned(expression)<faceCount_){const auto& f=faces_[expression];textures=reinterpret_cast<const int32_t*>(f.data+unsigned(sample(f,expressionFrame))*shapes_*4);}
     const float* uv=nullptr;
@@ -714,9 +798,13 @@ const float* DriverAnimation::lookPose(int clip,float frame,unsigned tick){
     const auto& c=clips_[clip];frame=sample(c,frame);unsigned a=unsigned(frame),b=a+1<c.count?a+1:(c.loop?0:a);float t=frame-a;
     if(lastClip_!=clip){hasPreviousPose_=lastClip_>=0;previousPalette_=palette_;if(lookCount_)std::copy_n(beforeLookPalette_.data(),matrices_*21,previousPalette_.data());previousEffectRoot_=effectRoot_;transitionTick_=tick;lastClip_=clip;}
     const float blend=motionBlendValid_?motionBlendWeight_:(hasPreviousPose_?std::clamp(float(tick-transitionTick_+1)/6.f,0.f,1.f):1.f);
-    const unsigned stride=matrices_*84+shapes_*4;
-    auto x=reinterpret_cast<const float*>(c.data+a*stride);auto y=reinterpret_cast<const float*>(c.data+b*stride);
-    for(unsigned k=0;k<n;++k){const unsigned at=need[k]*21;for(unsigned i=0;i<21;++i)palette_[at+i]=x[at+i]+(y[at+i]-x[at+i])*t;}
+    const float* x;const float* y;unsigned key;keyPair(c,a,b,x,y,key,need,n);
+    if(key==21)for(unsigned k=0;k<n;++k){const unsigned at=need[k]*21;for(unsigned i=0;i<21;++i)palette_[at+i]=x[at+i]+(y[at+i]-x[at+i])*t;}
+    else for(unsigned k=0;k<n;++k){
+        float* out=palette_.data()+need[k]*21;const unsigned at=need[k]*12;
+        for(unsigned i=0;i<12;++i)out[i]=x[at+i]+(y[at+i]-x[at+i])*t;
+        std::memcpy(out+12,fixedNormals_.data()+need[k]*9,36);
+    }
     if(blend<1)for(unsigned k=0;k<n;++k){float result[21];blendPosePair(result,previousPalette_.data()+need[k]*21,palette_.data()+need[k]*21,blend);std::memcpy(palette_.data()+need[k]*21,result,sizeof result);}
     uint32_t slots[4];
     auto subset=[&](const uint32_t* list,unsigned count){
@@ -762,11 +850,11 @@ const float* DriverAnimation::pose(int clip,float frame,unsigned tick,bool simul
 }
 bool DriverAnimation::makeRigid(Model& model){
     if(!ready||rigid()||hairClipCount_||hasBraids_||vertices_!=model.vertexCount)return false;
-    const unsigned stride=matrices_*84+shapes_*4;
+    const size_t stride=size_t(matrices_)*keyBytes_+shapes_*4;
     // Shape visibility must be constant: a hidden shape is simply not drawn.
     std::vector<uint32_t> visible(shapes_,1);
     for(unsigned clip=0;clip<count_;++clip)for(unsigned frame=0;frame<clips_[clip].count;++frame){
-        const auto flags=reinterpret_cast<const uint32_t*>(clips_[clip].data+frame*stride+matrices_*84);
+        const auto flags=reinterpret_cast<const uint32_t*>(clips_[clip].data+frame*stride+size_t(matrices_)*keyBytes_);
         for(unsigned i=0;i<shapes_;++i){if(clip==0&&frame==0)visible[i]=flags[i];else if(bool(flags[i])!=bool(visible[i]))return false;}
     }
     std::vector<uint8_t> hidden(vertices_,0);

@@ -47,6 +47,10 @@ public:
         uint32_t humanMask=1;
         uint32_t seed=0x2a;
     };
+    // Retail start and restart points (SetStartingENPT, Battle respawn links) and the obstacle
+    // search's frame parity from the race timer. false (DIAG no-retail-cpu-start.txt): 1.2.2's
+    // nearest route point, no Battle links and a frame count kept across races.
+    static inline bool retailStart=true;
     // After the race scene is built (karts at their grid slots).
     void reset(const Setup& setup);
     bool setBattleSources(const RaceItems&,const CoinBattleRuntime*);

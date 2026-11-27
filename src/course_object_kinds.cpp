@@ -1,7 +1,9 @@
 #include <game/field/obj/ObjectKarehayama.hh>
 #include <game/system/RaceConfig.hh>
+#include <game/system/CourseMap.hh>
 #include <game/field/obj/ObjectChimney.hh>
 #include "mkw/course_object_kinds.hpp"
+#include "mkw/course_objects.hpp"
 #include "mkw/factory_belts.hpp"
 #include "mkw/joint_billboard.hpp"
 #include "mkw/course_mii_statue.hpp"
@@ -98,6 +100,22 @@ C3D_Mtx facingMatrix(Vec3 position,Vec3 forward,Vec3 scale){
     return basisMatrix(side,cross(forward,side),forward,position,scale);
 }
 
+// Cheep cheep: course_object_kinds.hpp PukupukuMotion. v.picks[0] is its construction index.
+void drawPukupuku(ObjectDraw& d,Visual& v){
+    auto& f=v.pukupuku;
+    if(!f.started||d.tick<f.tick){
+        K::EGG::Matrix34f placement;placement.makeR(v.geo->rot()*0.01745329238474369f);
+        f.reset(v.geo->pos(),placement,unsigned(v.picks.empty()?0:v.picks[0]));
+    }
+    f.advance(d.tick);
+    K::EGG::Matrix34f t=f.rot;t[0,3]=f.pos.x;t[1,3]=f.pos.y;t[2,3]=f.pos.z;
+    const C3D_Mtx m=objectMatrix(t,v.geo->scale());
+    const bool far=v.low.model&&length(position(m)-d.camera)>renderQuality().objectLow(d.stereo);
+    const Tracks& tr=far?v.low:v.main;
+    d.submit(tr.model,m,loopAt(tr,f.frame));
+    if(v.shadow.model)d.shadow(v.shadow.model,m);
+    v.drawn=m;v.drawnValid=true;
+}
 // The original star/meteor object rotates its entire model independently
 // of CHR0; both distance variants receive the same current transform.
 void drawInseki(ObjectDraw& d,Visual& v){
@@ -150,6 +168,21 @@ void drawObakeBlock(ObjectDraw& d,Visual& v){
     d.submit(v.main.model,m,loopAt(v.main,float(d.tick)));
 }
 void drawBattleDesert(ObjectDraw& d,Visual& v);
+// A one-bone model whose bone is billboarded (ObjModel::billboard): NW4R g3d turns the
+// whole model in view space every frame (BILLBOARD: view-plane facing, projected local
+// Y roll; ROT: a root's parent-cancelled roll is its identity bind, so upright; Y: about
+// the model's up axis). Retail's generic object has no code of its own for it.
+C3D_Mtx billboardMatrix(const ObjectDraw& d,const ObjModel& model,const C3D_Mtx& m){
+    C3D_Mtx mv;Mtx_Multiply(&mv,&d.view.view,&m);
+    float rows[12];for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c)rows[r*4+c]=mv.r[r].c[3-c];
+    float joint[12]={1,0,0,0,0,1,0,0,0,0,1,0};
+    static constexpr float Upright[2]={0,1};
+    const int mode=model.billboard;
+    if(!(mode==5?billboardMiiJoint(joint,rows,5):billboardJoint(joint,rows,mode==3?Upright:nullptr)))return m;
+    C3D_Mtx j,b;Mtx_Identity(&j);
+    for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c)j.r[r].c[3-c]=joint[r*4+c];
+    Mtx_Multiply(&b,&m,&j);return b;
+}
 void drawGeneric(ObjectDraw& d,Visual& v){
     if(v.object&&K::Field::ObjectBlockStatue::isStatue(v.geo->id())&&d.course==33&&
        !static_cast<const K::Field::ObjectBlockStatue*>(v.object)->shown())return;
@@ -173,7 +206,7 @@ void drawGeneric(ObjectDraw& d,Visual& v){
     if(v.object&&v.object->id()==ObjectId::TownBridge)
         a.frame=static_cast<const K::Field::ObjectTownBridge*>(v.object)->animationFrame();
     if(v.variant>=0)a.patFrame=a.clrFrame=float(v.variant);
-    d.submit(t.model,m,a);
+    d.submit(t.model,t.model&&t.model->billboard&&objectBillboards?billboardMatrix(d,*t.model,m):m,a);
     if(v.shadow.model){
         if(v.object&&v.object->id()==ObjectId::DKRockGC){
             const auto& rock=*static_cast<const K::Field::ObjectRock*>(v.object);
@@ -1101,6 +1134,13 @@ bool classifyObject(Visual& v,const ObjectAssets& assets,int course){
     // Do not default every unknown object to its first CHR0 (a bridge-open
     // or Thwomp wake-up clip must not become an ambient loop).
     if(named(v,"moray")||named(v,"pukupuku"))v.main.clip=clip(v.main,"swim");
+    if(named(v,"pukupuku")&&pukupukuMotion&&v.geo->pathId()<0){
+        // Retail numbers the fish in construction order (static counter PAL 805177f4).
+        int order=0;
+        const auto* map=K::System::CourseMap::Instance();
+        for(unsigned i=0;i<v.index;++i){const auto* g=map->getGeoObj(i);if(g&&g->id()==v.geo->id()&&(g->presenceFlag()&1))++order;}
+        v.picks={order};v.low.clip=clip(v.low,"swim");v.present=drawPukupuku;
+    }
     if(named(v,"casino_roulette")){
         v.main.srt=scroll(v.main,"dushBoard");v.low.srt=scroll(v.low,"dushBoard");
     }
@@ -1319,6 +1359,8 @@ bool classifyObject(Visual& v,const ObjectAssets& assets,int course){
         // Suns and the Earth's glow ring are camera-facing sprites.
         v.present=drawSun;
     }
+    // Whole-model billboards draw through drawGeneric (any named handling above sets its own presenter).
+    if(objectBillboards&&v.present==drawGeneric&&v.main.model&&v.main.model->billboard)++billboardObjectPlacements;
     if(v.present==drawGeneric&&!v.main.model)return false;
     if(v.present==drawTide)return v.extra[0].model!=nullptr;
     return true;
@@ -1336,6 +1378,8 @@ bool singleMatrixBounds(const Visual& v,Bounds& out){
         if(!any){out=t.model->bounds;any=true;}
         else{out.include(t.model->bounds.minimum);out.include(t.model->bounds.maximum);}
     };
+    // A whole-model billboard turns with the view: its placement box is no bound.
+    if(objectBillboards&&v.present==drawGeneric&&((v.main.model&&v.main.model->billboard)||(v.low.model&&v.low.model->billboard)))return false;
     if(v.present==drawGeneric&&!(v.object&&v.object->id()==ObjectId::DKRockGC)){add(v.main);add(v.low);add(v.shadow);return any;}
     if(v.present==drawObakeBlock&&v.object){add(v.main);return any;}
     return false;

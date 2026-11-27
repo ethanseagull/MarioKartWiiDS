@@ -78,6 +78,14 @@ public:
         return m_frame;
     }
 
+    /// Presentation only: rk_wanSmk spawns (USA 0x806d7928) and the last one's position.
+    [[nodiscard]] u32 smokeSerial() const {
+        return m_smokeSerial;
+    }
+    [[nodiscard]] const EGG::Vector3f &smokePos() const {
+        return m_smokePos;
+    }
+
 private:
     void enterWait();
     void enterAttack();
@@ -150,6 +158,9 @@ private:
     bool m_chainTaut;       ///< Chain Chomp cannot move further because the chain is fully taut
     u32 m_frame;            ///< Counts up every frame
     const ObjectWanwanPile *m_pile = nullptr; ///< Presentation only: the stake's sound actor.
+    u32 m_smokeSerial = 0;     ///< Presentation only: landing smoke count (rk_wanSmk).
+    bool m_smokeArmed = true;  ///< Presentation only: retail +0x4d9, one attack smoke per lunge.
+    EGG::Vector3f m_smokePos = EGG::Vector3f::zero;
     EGG::Vector3f m_target; ///< Where the chain chomp is currently moving towards
     EGG::Vector3f m_targetDir;
     bool m_retarget;    ///< Tracks whether the target position has changed in the wait state

@@ -230,6 +230,47 @@ def cook_world(source, model, name, clip, output):
     return record
 
 
+def item_light_colours(source, name):
+    """CLR0 `name` of item_light.brres (the retail team item light: item_light_blue, and
+    item_light_red for a red team's items): per frame the lambert2 TevColor0 / TevColor1 RGB (its masks keep the
+    material's alpha). lambert2 draws C0 + TEXC * C1, alpha TEXA, blended, no depth write."""
+    d = source.read_bytes()
+
+    def string(o):
+        return d[o:d.index(b'\0', o)].decode('latin1')
+
+    def group(o):
+        n = struct.unpack_from('>I', d, o + 4)[0]
+        return [(string(o + struct.unpack_from('>I', d, o + 8 + i * 16 + 8)[0]), o + struct.unpack_from('>I', d, o + 8 + i * 16 + 12)[0]) for i in range(1, n + 1)]
+
+    root = struct.unpack_from('>H', d, 0xC)[0]
+    for folder, at in group(root + 8):
+        for entry, o in group(at):
+            if d[o:o + 4] != b'CLR0' or entry != name:
+                continue
+            data = struct.unpack_from('>i', d, o + 0x10)[0]
+            frames = struct.unpack_from('>H', d, o + 0x1C + 4)[0]
+            for material, mo in group(o + data):
+                flags = struct.unpack_from('>I', d, mo + 4)[0]
+                p, tracks = mo + 8, {}
+                for target in range(11):
+                    bits = (flags >> (target * 2)) & 3
+                    if not bits & 1:
+                        continue
+                    if bits & 2:
+                        values = [struct.unpack_from('>I', d, p + 4)[0]] * (frames + 1)
+                    else:
+                        table = p + 4 + struct.unpack_from('>i', d, p + 4)[0]
+                        values = [struct.unpack_from('>I', d, table + 4 * k)[0] for k in range(frames + 1)]
+                    tracks[target] = values
+                    p += 8
+                if 4 not in tracks or 5 not in tracks:
+                    raise ValueError('item_light CLR0 lacks TevColor0/1: ' + name)
+                rgb = lambda c: [c >> 24 & 255, c >> 16 & 255, c >> 8 & 255]
+                return [[rgb(tracks[4][k]), rgb(tracks[5][k])] for k in range(frames)]
+    raise ValueError('Missing CLR0 ' + name)
+
+
 def write_header(manifest):
     def sprites(name, count, records):
         lines = [f"inline constexpr std::array<RaceSprite,{count}> {name}{{{{"]
@@ -252,7 +293,17 @@ def write_header(manifest):
     lines += ["inline constexpr std::array<const char*,21> ItemModels{{",
               "    " + ",".join(json.dumps(paths[i]) if i in paths else "nullptr" for i in range(21)), "}};",
               'inline constexpr const char* ItemBoxModel="models/item_box.gmdl";',
-              'inline constexpr const char* StartSignalModel="models/start_signal.gmdl";', "}", ""]
+              'inline constexpr const char* StartSignalModel="models/start_signal.gmdl";']
+    light = manifest.get("itemLight")
+    lines += ["// item_light (Common.szs; the retail team item light): model, CHR0 bank and",
+              "// item_light_blue's / item_light_red's TevColor0 / TevColor1 per frame (loops).",
+              'inline constexpr const char* ItemLightModel=' + (json.dumps(light["path"]) if light else "nullptr") + ';',
+              'inline constexpr const char* ItemLightBank=' + (json.dumps(light["animation"]) if light else "nullptr") + ';',
+              f'inline constexpr unsigned char ItemLightBlue[{len(light["blue"]) if light else 1}][2][3]={{' +
+              (','.join('{{%d,%d,%d},{%d,%d,%d}}' % tuple(c[0] + c[1]) for c in light["blue"]) if light else '{{0,0,0},{0,0,0}}') + '};',
+              f'inline constexpr unsigned char ItemLightRed[{len(light["red"]) if light and "red" in light else 1}][2][3]={{' +
+              (','.join('{{%d,%d,%d},{%d,%d,%d}}' % tuple(c[0] + c[1]) for c in light["red"]) if light and "red" in light else '{{0,0,0},{0,0,0}}') + '};',
+              "}", ""]
     (ROOT / "include/mkw/race_assets.hpp").write_text("\n".join(lines))
 
 
@@ -282,6 +333,11 @@ def main():
         manifest["itemBox"]["runtimeUVAnimation"] = {"source": "itembox and itemBoxNise SRT0 and materials", "frames": 300,
                                                      "header": "include/mkw/item_box_uv.hpp"}
         manifest["startSignal"] = cook_world(common / "jugemu_signal.brres", "jugemu_signal", "start_signal", None, args.output)
+        # The retail team item light (Item::Obj::LoadItemLight, USA 80797360): item_light, its CHR0
+        # (scale pulse, billboard bone) and the item_light_blue / item_light_red colours.
+        manifest["itemLight"] = cook_world(common / "item_light.brres", "item_light", "item_light", "item_light", args.output)
+        manifest["itemLight"]["blue"] = item_light_colours(common / "item_light.brres", "item_light_blue")
+        manifest["itemLight"]["red"] = item_light_colours(common / "item_light.brres", "item_light_red")
     ui = ROOT / "assets/race-ui/Race/game_image/timg"
     localized = ROOT / "assets/race-ui/Race_U/game_image/timg"
     for ident, source in ICONS.items():

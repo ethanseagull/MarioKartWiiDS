@@ -2,6 +2,7 @@
 #include "game/field/CollisionDirector.hh"
 #include "game/field/ObjectDirector.hh"
 #include "game/kart/KartObject.hh"
+#include <bit>
 #include <cmath>
 #include "game/system/RaceManager.hh"
 #include <algorithm>
@@ -12,15 +13,20 @@ namespace Kinoko::Field {
 ObjectQuicksand::ObjectQuicksand(const System::MapdataGeoObj& p):ObjectDrivable(p),m_origin(pos()){
     if(p.setting(0)!=1){m_thwomp=EGG::egg_new<ObjectQuicksandThwomp>(p);m_thwomp->load();}
 }
-unsigned ObjectQuicksand::state(u32 frame){const u32 p=frame%2600;return p<1200?1:p<2000?2:0;}
-unsigned ObjectQuicksand::stateFrame(u32 frame){const u32 p=frame%2600;return p<1200?p:p<2000?p-1200:p-2000;}
+// USA 807fe308..807fe398: signed (divw) on the frame, so a frame before 0 stays negative.
+unsigned ObjectQuicksand::state(u32 frame){const s32 p=static_cast<s32>(frame)%2600;return p<1200?1:p<2000?2:0;}
+s32 ObjectQuicksand::stateFrame(u32 frame){const s32 p=static_cast<s32>(frame)%2600;return p<1200?p:p<2000?p-1200:p-2000;}
 f32 ObjectQuicksand::waveAmplitude(u32 frame)const{
+    // USA 807fe39c..807fe49c, operation for operation: the crest angle (global,
+    // 15 degrees) in table units of 128/180, then 200 x SinFIdx.
     if(state(frame)!=2)return 0.f;
-    const f32 t=static_cast<f32>(stateFrame(frame));f32 degrees;
-    if(t<165.f)degrees=t;
-    else if(t<500.f)degrees=15.f;
-    else degrees=15.f*(800.f-t)/300.f;
-    return 200.f*EGG::Mathf::sin(degrees*DEG2RAD);
+    constexpr f32 DEG=15.f,DEG2FIDX=std::bit_cast<f32>(0x3f360b61u);
+    const s32 age=stateFrame(frame);const f32 a=static_cast<f32>(age);
+    const f32 rise=180.f-DEG,fall=20.f*DEG;f32 fidx;
+    if(a<rise)fidx=DEG2FIDX*((rise*a)/rise);
+    else if(a<800.f-fall)fidx=DEG2FIDX*DEG;
+    else fidx=DEG2FIDX*((DEG*static_cast<f32>(800-age))/fall);
+    return 200.f*EGG::Mathf::SinFIdx(fidx);
 }
 f32 ObjectQuicksand::surfaceOffset(f32 radius,u32 frame)const{
     // 807fdd8c..e028; this same radial function drives all20 mesh joints
@@ -30,16 +36,21 @@ f32 ObjectQuicksand::surfaceOffset(f32 radius,u32 frame)const{
     return wave-360.f*phase;
 }
 EGG::Vector3f ObjectQuicksand::flowVelocity(const EGG::Vector3f& p,u32 frame)const{
-    const f32 r=EGG::Mathf::sqrt(p.x*p.x+p.z*p.z);
-    EGG::Vector3f direction=r>0.f?EGG::Vector3f(p.x/r,0.f,p.z/r):EGG::Vector3f::zero;
-    const unsigned s=state(frame),t=stateFrame(frame);f32 strength=-1.f;
-    if(s==0)strength=std::clamp(-10.f*static_cast<f32>(t)/1200.f,-1.f,0.f);
-    if(s==2){strength=10.f-10.f*static_cast<f32>(t)/1200.f;if(t<10)direction=EGG::Vector3f::ey;}
-    return direction*(strength*13.f*2000.f/std::clamp(r,3000.f,9500.f));
+    // USA 807fee24, operation for operation. Retail passes the query's world
+    // position (not relative to the object).
+    const f32 r=EGG::Mathf::sqrt(p.z*p.z+p.x*p.x);
+    const unsigned s=state(frame);const s32 age=stateFrame(frame);
+    const f32 step=-10.f/1200.f,a=static_cast<f32>(age);f32 strength=-1.f;
+    if(s==0){f32 v=step*a;if(v<-1.f)v=-1.f;else if(v>0.f)v=0.f;strength=v;}
+    else if(s==2)strength=10.f+step*a;
+    EGG::Vector3f direction(p.x,0.f,p.z);direction.normalise2(); // DOL 80242cb0
+    if(s==2&&a<10.f)direction=EGG::Vector3f::ey;
+    f32 rc=r;if(rc<3000.f)rc=3000.f;else if(rc>9500.f)rc=9500.f;
+    return direction*strength*13.f*2000.f*(1.f/rc);
 }
 void ObjectQuicksand::calc(){
     const auto t=System::RaceManager::Instance()->timer();
-    const auto phase=state(t),age=stateFrame(t);
+    const unsigned phase=state(t);const s32 age=stateFrame(t);
     //807fda34..dcf8: reverse the sand while sinking; ease through the
     // last60 wave ticks and the first240 reset ticks, retaining SRT phase.
     f32 rate=-3.f;
@@ -56,7 +67,8 @@ template<class T> bool ObjectQuicksand::collide(f32 radius,const EGG::Vector3f& 
     if(r>9500.f)return false;
     const u32 t=System::RaceManager::Instance()->timer()-offset;
     const f32 dist=radius-(local.y-surfaceOffset(r,t));if(dist<=0.f)return false;
-    const bool sink=push&&r<.4f*900.f&&state(t)!=2&&t!=0;
+    const bool centre=r<.4f*900.f&&state(t)!=2&&t!=0;
+    const bool sink=push&&centre;
     const auto tangent=EGG::Vector3f::ey*dist;
     // The centre reports a non-solid fall trigger, not a supporting floor.
     // Kinoko applies every returned bbox displacement directly to the body
@@ -64,7 +76,7 @@ template<class T> bool ObjectQuicksand::collide(f32 radius,const EGG::Vector3f& 
     if(info&&!sink){info->bbox.min=info->bbox.min.minimize(tangent);info->bbox.max=info->bbox.max.maximize(tangent);
         if constexpr(std::is_same_v<T,CollisionInfo>){
             info->updateFloor(dist,EGG::Vector3f::ey);
-            if(dist>info->movingFloorDist){info->movingFloorDist=dist;info->roadVelocity=flowVelocity(local,t);info->floorObject=this;}
+            if(dist>info->movingFloorDist){info->movingFloorDist=dist;info->roadVelocity=flowVelocity(p,t);info->floorObject=this;}
         }
     }
     if(out){
@@ -82,7 +94,7 @@ template<class T> bool ObjectQuicksand::collide(f32 radius,const EGG::Vector3f& 
                 cd->pushCollisionEntry(dist,out,KCL_TYPE_BIT(type),CollisionDirector::CollisionAttribute(type));
                 cd->setCurrentCollisionTrickable(state(t)==2);
             }
-        }else *out|=KCL_TYPE_BIT(type);
+        }else *out|=KCL_TYPE_BIT(centre?COL_TYPE_FALL_BOUNDARY:type); // USA 808003e8..80800418
     }
     return true;
 }
@@ -103,7 +115,14 @@ void ObjectQuicksandThwomp::calc(){
 }
 Kart::Reaction ObjectQuicksandThwomp::onCollision(Kart::KartObject* kart,Kart::Reaction onKart,Kart::Reaction,EGG::Vector3f& depth){
     //807fcd54: top contact within29 degrees, excluding the rising phase.
-    const f32 angle=std::fabs(std::atan2(depth.cross(EGG::Vector3f::ey).length(),depth.dot(EGG::Vector3f::ey)))*RAD2DEG;
+    // Retail 807fcd94..807fce20: against -ey (the Thwomp lands on the kart), EGG sqrt
+    // and atan2 (DOL 0x8022f488, 0x8022f560).
+    const EGG::Vector3f down=-EGG::Vector3f::ey;
+    const f32 dot=depth.x*down.x+depth.y*down.y+depth.z*down.z;
+    const EGG::Vector3f c=depth.cross(down);
+    f32 angle=EGG::Mathf::atan2(EGG::Mathf::sqrt(c.x*c.x+c.y*c.y+c.z*c.z),dot);
+    if(!(angle>0.f))angle=-angle;
+    angle*=std::bit_cast<f32>(0x42652ee0u); // 0x808a56a8, not RAD2DEG
     if(angle<29.f&&m_anmState!=AnmState::Rising){
         cueSound(0x245,SoundCall::Voice);
         const auto& table=ObjectDirector::Instance()->hitTableKart();

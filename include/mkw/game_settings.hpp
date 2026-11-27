@@ -1,8 +1,9 @@
 #pragma once
 // Whole-game options from the Settings page (the license screen's corner
 // button): sd:/3ds/MKWiiDS/settings.dat. Version 2, 20 bytes: "MKWS0002",
-// the seven values, a spare byte, then a CRC-32 of the first 16 bytes (files
-// from before the Minimap option have 0 in byte 13: 30fps; before CRT, 0 in 14).
+// the seven values, the lower screen's last view (byte 15), then a CRC-32 of the first 16 bytes (files
+// from before the Minimap option have 0 in byte 13: 30fps; before CRT, 0 in 14; before the Standings
+// view, 0 in 15: the close-up).
 // Version 1 (16 bytes: "MKWS0001", four values, a CRC-32 of the first 12) is
 // still read, with 800px Mode at its default.
 #include <array>
@@ -28,6 +29,9 @@ struct UiSettings {
  // CRT look: scanlines and a vignette on both screens in 800px frames
  // (Renderer::crtNow). Byte 14 (files from before it hold 0: Off).
  bool crt=false;
+ // The race lower screen's last view (the Standings view, RaceBottomScreen): it opens the next race
+ // in the view the last one ended in. Byte 15; no Settings row (not part of the presets).
+ bool standingsView=false;
  bool operator==(const UiSettings&)const=default;
 };
 // The Settings page's presets; any other mix is Custom. Old 3DS's locked
@@ -46,7 +50,7 @@ inline UiSettings settingsPreset(unsigned i){
 }
 // The preset these values are, or SettingsPresetCount (Custom).
 inline unsigned settingsPresetOf(const UiSettings& s){
- for(unsigned i=0;i<SettingsPresetCount;++i)if(s==settingsPreset(i))return i;
+ for(unsigned i=0;i<SettingsPresetCount;++i){UiSettings p=settingsPreset(i);p.standingsView=s.standingsView;if(s==p)return i;}
  return SettingsPresetCount;
 }
 // Old 3DS (268 MHz, one core, 43 MB heap): every option stays at its light
@@ -68,6 +72,7 @@ inline bool read(const char* path,UiSettings& out){
  const std::uint32_t stored=std::uint32_t(b[at])|std::uint32_t(b[at+1])<<8|std::uint32_t(b[at+2])<<16|std::uint32_t(b[at+3])<<24;
  if(!end||!(v1||v2)||b[8]>1||b[9]>1||b[10]>1||b[11]>1||(v2&&(b[12]>1||b[13]>1||b[14]>1))||stored!=crc(b.data(),at))return false;
  out.textureQuality=b[8];out.bloom=b[10];out.opponentDetail=b[11];out.wide800=v2?b[12]!=0:UiSettings{}.wide800;out.minimap60=v2&&b[13];out.crt=v2&&b[14];
+ out.standingsView=v2&&b[15]==1;
  return true;
 }
 }
@@ -80,7 +85,7 @@ inline bool loadGameSettings(const char* path,UiSettings& out){
 // Written to a temporary file and renamed, keeping the previous file as .bak.
 inline bool saveGameSettings(const char* path,const UiSettings& s){
  std::array<unsigned char,20> b{};std::memcpy(b.data(),"MKWS0002",8);
- b[8]=std::uint8_t(s.textureQuality!=0);b[9]=0;b[10]=s.bloom;b[11]=std::uint8_t(s.opponentDetail!=0);b[12]=s.wide800;b[13]=s.minimap60;b[14]=s.crt;
+ b[8]=std::uint8_t(s.textureQuality!=0);b[9]=0;b[10]=s.bloom;b[11]=std::uint8_t(s.opponentDetail!=0);b[12]=s.wide800;b[13]=s.minimap60;b[14]=s.crt;b[15]=s.standingsView;
  const auto c=settings_file::crc(b.data(),16);for(unsigned i=0;i<4;++i)b[16+i]=std::uint8_t(c>>(8*i));
  char tmp[160],bak[160];std::snprintf(tmp,sizeof tmp,"%s.tmp",path);std::snprintf(bak,sizeof bak,"%s.bak",path);
  FILE* f=std::fopen(tmp,"wb");if(!f)return false;

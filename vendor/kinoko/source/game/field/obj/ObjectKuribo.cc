@@ -241,7 +241,8 @@ void ObjectKuribo::calcDamage() {
         // USA806ccf30: once the squash passes below1, amplitude increases
         // from .5 to1; width rises .1 per frame, capped1.5; height clamps .1.
         const f32 amplitude = m_damageHeight < 1.0f ? 1.0f : 0.5f;
-        m_damageHeight = 1.0f + amplitude * std::sin(TAU * static_cast<f32>(m_damageFrame) / 20.0f);
+        // Retail 806ccfa4..806ccfe0: SinFIdx(RAD2FIDX x (2pi f)/(4x5)), not libm sin.
+        m_damageHeight = 1.0f + amplitude * EGG::Mathf::sin(TAU * static_cast<f32>(m_damageFrame) / 20.0f);
         if (m_damageHeight < 0.1f) {
             m_damageHeight = 0.1f; m_damageWidth = 1.5f;
             m_flatFrame = m_damageFrame;
@@ -269,7 +270,7 @@ void ObjectKuribo::calcDamage() {
     if (m_damagePhase == DamagePhase::Growing) {
         // USA806cd328: rise/overshoot with a40-tick sine, settling to1 on
         // its downward crossing after tick10. Collision returns at settling.
-        m_damageHeight = 1.5f * std::sin(TAU * static_cast<f32>(m_damageFrame) / 40.0f);
+        m_damageHeight = 1.5f * EGG::Mathf::sin(TAU * static_cast<f32>(m_damageFrame) / 40.0f); // 806cd368..806cd3b0
         m_damageWidth = std::min(1.0f, m_damageWidth + 0.1f);
         if (m_damageFrame > 10 && m_damageHeight <= 1.0f) {
             m_damagePhase = DamagePhase::Alive; m_damageWidth = m_damageHeight = 1.0f;

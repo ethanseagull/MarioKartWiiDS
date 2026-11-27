@@ -56,6 +56,43 @@ def mdl0_names(path):
     return []
 
 
+# NW4R draws any MDL0 bone with a billboard mode facing the camera, whatever the object
+# class (g3d CalcView): retail's generic object (ctor 8081efec, used by KmoonZ, sun,
+# castletree1 and every flow name the factory 80821e14 does not know, e.g. Crescent64)
+# has no billboard code of its own. A model whose only bone is billboarded with an
+# identity bind lists as "<model>@bb<mode>" (modes 1 BILLBOARD, 3 ROT, 5 Y) and draws as a
+# whole-model billboard (src/course_object_kinds.cpp billboardMatrix): Mario Circuit and
+# Moo Moo Meadows' castletree2, Rainbow Road's moon, N64 Skyscraper's crescent, chimney
+# smoke. Names with their own billboard code keep their line (the sun-class sprites,
+# WLfirebarGC's fireBPlane).
+BILLBOARD_MODES = (1, 3, 5)
+OWN_BILLBOARD = ('sun', 'SpaceSun', 'EarthRing', 'fireBPlane')
+
+
+def mdl0_root_billboard(path, model):
+    """The billboard mode of MDL0 `model` when it has one bone, billboarded, with an
+    identity bind (NW4R ResNodeData +0x14 flag 1, +0x18 mode), else 0."""
+    data = path.read_bytes()
+
+    def dictionary(offset):
+        count = struct.unpack_from('>I', data, offset + 4)[0]
+        out = {}
+        for i in range(1, count + 1):
+            entry = offset + 8 + 16 * i
+            name, target = struct.unpack_from('>II', data, entry + 8)
+            out[data[offset + name:data.index(b'\0', offset + name)].decode('latin1')] = offset + target
+        return out
+    root = struct.unpack_from('>H', data, 12)[0]
+    mdl0 = dictionary(dictionary(root + 8)['3DModels(NW4R)'])[model]
+    version = struct.unpack_from('>I', data, mdl0 + 8)[0]
+    sections = struct.unpack_from('>%di' % (11 if version < 10 else 14), data, mdl0 + 0x10)
+    bones = list(dictionary(mdl0 + sections[1]).values())
+    if len(bones) != 1:
+        return 0
+    flags, mode = struct.unpack_from('>II', data, bones[0] + 0x14)
+    return mode if flags & 1 and mode in BILLBOARD_MODES else 0
+
+
 def safe(name):
     return ''.join(ch if ch.isalnum() else '_' for ch in name.lower())
 
@@ -82,6 +119,10 @@ def cook_course(course, force, mii_manifest=None):
     if not force and manifest.is_file() and stamp.is_file() and json.loads(stamp.read_text()).get('signature') == signature:
         return json.loads(stamp.read_text())['report']
     lines, report, encoded = [], [], set()
+    # A static model whose welded mesh is byte-identical to one already cooked
+    # for this course (Wii U Sunshine Airport: skyship and skyship_low) points
+    # at that mesh; the game loads each mesh once (ObjectAssets::load).
+    static_meshes = {}
     for archive in archives:
         resource = archive.stem
         texture_prefix = f"obj{course['id']:02d}_{safe(resource)}"
@@ -146,8 +187,22 @@ def cook_course(course, force, mii_manifest=None):
             else:
                 (OUT / 'models' / (stem + '.dobj')).unlink(missing_ok=True)
                 keep_bank.unlink(missing_ok=True)
-            lines.append(f"{resource} {model} {parts[0]['name']} {bank_name}\n")
-            report.append({'resource': resource, 'model': model, 'gmdl': parts[0]['name'], 'bank': bank_name,
+            mesh_name = parts[0]['name']
+            if not animated:
+                key = hashlib.sha256(welded).hexdigest()
+                if key in static_meshes:
+                    mesh_name = static_meshes[key]
+                    mesh.unlink(missing_ok=True)
+                    keep.unlink(missing_ok=True)
+                else:
+                    static_meshes[key] = mesh_name
+            listed = model
+            if model not in OWN_BILLBOARD:
+                mode = mdl0_root_billboard(archive, model)
+                if mode:
+                    listed = f'{model}@bb{mode}'
+            lines.append(f"{resource} {listed} {mesh_name} {bank_name}\n")
+            report.append({'resource': resource, 'model': model, 'gmdl': mesh_name, 'bank': bank_name,
                            'bank_bytes': bank.stat().st_size if animated else 0, 'gmdl_bytes': parts[0]['bytes'],
                            'triangles': parts[0]['triangles'], 'weld': weld_stats,
                            **{k: info[k] for k in ('palette', 'nodes', 'weighted', 'chr', 'pat', 'srt', 'clr')}})

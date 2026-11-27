@@ -300,6 +300,24 @@ before GSP showed it, and each VBlank at which the top screen kept its picture
 The loop's `late_frames` and `rendered` miss these: the loop and the GPU can
 both hold 60 while the screen repeats a picture and skips the next.
 
+Race rules made retail-exact after 1.2.2 (Kinoko, CPU AI), one off-file each:
+`no-retail-mii-stats.txt` (Mii racers take one stat entry per Mii size again
+instead of retail's 23 + (id - 23) / 6), `no-retail-class-rules.txt` (Dry Dry
+Ruins pillars fall on the 150cc frame and DS Yoshi Falls pulls at the 150cc
+speed in every class; GCN Waluigi Stadium's fall boundary is not safe during a
+big flip), `no-race-random2.txt` (Boos and Moonview's CarB draw from the race
+RNG that moves karts again), `no-retail-checkpoint-search.txt` (the race start
+finds its checkpoint with the ordinary search), `no-retail-battle-slots.txt`
+(start boosts on Chain Chomp Roulette and Funky Stadium, and karts on the
+Roulette deck do not turn with it), `no-retail-areas.txt` (AREA cylinders test
+inverted and the priority sort can drop areas, as before),
+`no-retail-kart-depth.txt` (kart-to-kart push depth from the plain radius sum,
+not retail's square root of its square),
+`no-retail-slipstream-accel.txt` (a slipstream boost without retail's 0.7
+acceleration), `no-retail-cpu-start.txt` (CPUs start at the route point
+nearest their kart, Battle respawns have no route links and the obstacle
+search's frame parity carries over from the previous race).
+
 ## Repacked packs
 
 `tools/pakpack.c` (build: `gcc -O2 -o pakpack tools/pakpack.c`) rewrites an

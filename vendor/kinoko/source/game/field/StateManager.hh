@@ -35,6 +35,9 @@ public:
         return m_currentFrame;
     }
 
+    /// Port: true only while ObjectDirector::reinitForRace runs (see resetStates).
+    static inline bool s_reinitActive = false;
+
 protected:
     StateManager(void *obj, const std::span<const StateManagerEntry> &entries)
         : m_currentStateId(0), m_nextStateId(-1), m_currentFrame(0), m_entries(entries),
@@ -52,8 +55,16 @@ protected:
 
     /// Port: back to the constructor's state, for init() run again at the
     /// course preview's end (retail rebuilds the scene there). A no-op on the
-    /// first init, which follows the constructor.
+    /// first init, which follows the constructor. Only during that re-init:
+    /// retail's init() keeps the state, and objects call init() mid-race too
+    /// (a fireball's enterState1 launches through it, a bat respawns with it).
+    /// Resetting there sent every Grumble Volcano fireball and every custom
+    /// track's VolcanoBall (DS Airship Fortress's Bullet Bills) straight back
+    /// to dormant on launch.
     void resetStates() {
+        if (!s_reinitActive) {
+            return;
+        }
         m_currentStateId = 0;
         m_nextStateId = -1;
         m_currentFrame = 0;

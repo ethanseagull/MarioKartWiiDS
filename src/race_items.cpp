@@ -97,6 +97,8 @@ unsigned RaceItems::objectCount(unsigned type) const{
         if(h.cloud)add(ItemKind::ThunderCloud,1);
         if(h.bullet)add(ItemKind::Bullet,1);
         if(h.pow)add(ItemKind::Pow,i==powUser_?1:0);
+        // USA 0x8078ff00: a spinning roulette's prize already counts.
+        if(h.roulette&&unsigned(rouletteChoice_[i])<19)add(rouletteChoice_[i],ItemObjects[unsigned(rouletteChoice_[i])].count);
     }
     if(frame_<blooperBusyUntil_)add(ItemKind::Blooper,1);
     return n;
@@ -113,6 +115,7 @@ void RaceItems::objectCounts(std::array<unsigned,15>& out) const{
         if(h.cloud)add(ItemKind::ThunderCloud,1);
         if(h.bullet)add(ItemKind::Bullet,1);
         if(h.pow)add(ItemKind::Pow,i==powUser_?1:0);
+        if(h.roulette&&unsigned(rouletteChoice_[i])<19)add(rouletteChoice_[i],ItemObjects[unsigned(rouletteChoice_[i])].count);
     }
     if(frame_<blooperBusyUntil_)add(ItemKind::Blooper,1);
 }
@@ -371,9 +374,17 @@ void RaceItems::scatterHeld(unsigned player,unsigned slot){
     const auto& r=racers_[player];const Vec3 up=normalized(r.up,{0,1,0});
     a.velocity=tangent(d.positions[slot]-d.previous[slot],up)+up*(25+std::clamp(dot(itemMotion(r),up),0.f,1.2f))+
         normalized(d.positions[slot]-r.position,{})*(13.f*(slot+1));
-    a.scale=std::max(.8f,d.scales[slot]);a.lifetime=0;a.ownerImmunity=7;
+    a.scale=std::max(.8f,d.scales[slot]);a.lifetime=0;a.ownerImmunity=7;droppedBomb(a);
     const auto prop=itemProperties(unsigned(kind));a.radius=prop.releasedContact*a.scale;a.terrainRadius=prop.terrain*a.scale;
     removeHeld(player,slot,false);
+}
+void RaceItems::droppedBomb(ItemActor& a){
+    if(a.kind!=ItemKind::Bobomb||a.explosion||!dropFuse)return;
+    // Both damage drops call Obj::InitProperties (0x8079df68) and then the object's
+    // OnTetherBreak (vtable +0x28; ObjBomb 0x8079d0ec): the update ptmf becomes the Bob-omb's own
+    // (0x8079bcd0), next state TICKING, +0x1ec = 270, +0x1a0 = 0, forward bit cleared.
+    // Off (no-drop-fuse.txt): the fuse counts from the drop (spawn: 90).
+    a.dropTicking=true;a.dropLanded=false;a.dropHold=270;
 }
 void RaceItems::destroyHeld(unsigned player,unsigned slot){
     // A held Bob-omb that is struck detonates where it trails.
@@ -625,8 +636,17 @@ void RaceItems::updateHolder(unsigned i){
     if(cloudSlot_[i]&&!--cloudSlot_[i]&&h.item==ItemKind::ThunderCloud&&!h.charges)h.item=ItemKind::None;
     if(h.cloud)updateCloud(i);
     if(h.golden&&!--h.golden){h.item=ItemKind::None;h.charges=0;}
-    // Respawning (fn_1_288494) clears the inventory, the roulette and the slot lock.
-    if(racers_[i].unavailable&&!racers_[i].inCannon){applyLoss(i,{true,true,false});h.slotLock=ItemKind::None;}
+    // Respawning (USA 0x8078f83c) deletes the inventory and any items still waiting to fly
+    // out (0x807adf94), stops the roulette (0x807abb78), clears the slot lock and deletes
+    // the trailing items (0x8078bc38): nothing is dropped on the road. The Thunder Cloud
+    // never enters the retail inventory, so its slot stays.
+    if(racers_[i].unavailable&&!racers_[i].inCannon){
+        if(h.item!=ItemKind::ThunderCloud){h.item=ItemKind::None;h.charges=0;h.golden=0;}
+        inventoryDrops_[i]={};
+        if(h.roulette){h.roulette=0;rouletteChoice_[i]=ItemKind::None;roulettes_[i]={};}
+        h.slotLock=ItemKind::None;
+        if(h.deployed){heldDropTicks_[i]=0;for(unsigned slot=0;slot<3;++slot)removeHeld(i,slot,false);}
+    }
     // ItemHolderPlayer_update (0x80797928): a finished racer's inventory is cleared every
     // frame and its trailing items vanish (no drop, no break). The Thunder Cloud never
     // enters the retail inventory, so its slot stays.
@@ -643,6 +663,7 @@ void RaceItems::updateHolder(unsigned i){
         a.scale=.05f;a.radius=itemProperties(unsigned(a.kind)).releasedContact*a.scale;a.terrainRadius=itemProperties(unsigned(a.kind)).terrain*a.scale;
         // RMCU ItemHolder_spawnDirect: ejected items spare their owner for 7 frames.
         a.lifetime=0;a.ownerImmunity=7;if(!drop.count)drop={};
+        droppedBomb(a);
     }
     if(heldDropTicks_[i]){
         --heldDropTicks_[i];

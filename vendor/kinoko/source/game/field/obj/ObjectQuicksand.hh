@@ -15,7 +15,7 @@ public:
     f32 surfaceOffset(f32 radius,u32 frame) const;
     EGG::Vector3f flowVelocity(const EGG::Vector3f& local,u32 frame) const;
     static unsigned state(u32 frame);
-    static unsigned stateFrame(u32 frame);
+    static s32 stateFrame(u32 frame);
     f32 waveAmplitude(u32 frame) const;
     f32 animationFrame() const {return m_scrollFrame;}
     template<class T> bool collide(f32 radius,const EGG::Vector3f& p,KCLTypeMask mask,T* info,KCLTypeMask* out,u32 offset,bool push);

@@ -5,6 +5,7 @@
 #include "mkw/fire_phase_stream.hpp"
 #include "mkw/object_bank.hpp"
 #include "mkw/inseki_motion.hpp"
+#include "mkw/pukupuku_motion.hpp"
 #include "mkw/renderer.hpp"
 #include <egg/math/Matrix.hh>
 #include <game/system/map/MapdataGeoObj.hh>
@@ -28,7 +29,11 @@ struct ObjModel {
     int budgetClip=-2;float budgetFrame=-1;std::vector<float> budgetPalette;
 
     std::string resource,name;
-    std::unique_ptr<Model> model;
+    // NW4R billboard mode of a one-bone model ("<model>@bb<mode>": 1, 3 or 5; 0 none):
+    // the whole model faces the camera (tools/cook_course_objects.py, billboardMatrix).
+    int billboard=0;
+    // Shared by list lines that name the same static mesh (ObjectAssets::load).
+    std::shared_ptr<Model> model;
     std::unique_ptr<ObjectBank> bank;
     Bounds bounds{};
     Bounds stadiumFace{};bool hasStadiumFace=false;
@@ -113,6 +118,7 @@ struct Visual {
     std::array<Tracks,6> extra{};
     std::array<int,8> clips{-1,-1,-1,-1,-1,-1,-1,-1};
     InsekiMotion inseki;
+    PukupukuMotion pukupuku;
     float rate=1,phase=0;
     int variant=0;
     bool kinetic=false; // Kinoko moves it: use its live transform.

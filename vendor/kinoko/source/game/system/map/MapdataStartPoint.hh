@@ -19,6 +19,8 @@ public:
 
     void read(EGG::Stream &stream);
     [[nodiscard]] s16 playerIndex() const { return m_playerIndex; }
+    [[nodiscard]] const EGG::Vector3f &pos() const { return m_position; }
+    [[nodiscard]] const EGG::Vector3f &rot() const { return m_rotation; }
     void findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles, u8 placement,
             u8 playerCount);
 

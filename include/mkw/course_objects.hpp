@@ -17,6 +17,13 @@ inline unsigned sharedObjectTextures=0;inline std::size_t sharedObjectTextureByt
 inline bool objectWeldOff=false;
 // The last course load's meshes and banks loaded from those copies (runtime.log).
 inline unsigned unweldedObjectMeshes=0,unweldedObjectBanks=0;
+// The last course load's whole-model billboards ("@bb" list lines) and the placements
+// drawn with them (runtime.log; one view-space basis per placement per frame).
+inline unsigned billboardObjectModels=0,billboardObjectPlacements=0;
+// Off (no-billboard.txt): "@bb" models draw fixed at their placement, as before.
+inline bool objectBillboards=true;
+// Off (no-pukupuku.txt): cheep cheeps stand at their placement playing the swim clip, as before.
+inline bool pukupukuMotion=true;
 // Course-object presentation. Original per-MDL0 models and animation banks
 // (tools/cook_course_objects.py) are drawn from Kinoko's live object state, or
 // for placements Kinoko does not simulate, from their retail presentation
@@ -48,6 +55,11 @@ public:
     void draw(Renderer& renderer,unsigned tick,Vec3 camera);
     // Transparent tide layers, after opaque scenery and racers, before effects.
     void drawWater(Renderer& renderer);
+    // Dynamic Shadows: only bobbing/deforming bridge supports hide a wheel's contact
+    // shade; never all moving platforms.
+    bool suppressWheelContact(Vec3 center,float radius) const;
+    // Dynamic Shadows' object receivers from this frame's recorded draws.
+    const std::vector<Renderer::ShadowReceiver>& shadowReceivers(Vec3 origin,float radius);
     // Only bobbing/deforming bridge supports; never all moving platforms.
     // Sky-pass objects (suns, Rainbow Road's Earth glow): drawn after the sky,
     // before the course, so walls and scenery cover them.

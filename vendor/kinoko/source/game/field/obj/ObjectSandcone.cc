@@ -28,7 +28,8 @@ void ObjectSandcone::init() {
 const EGG::Matrix34f &ObjectSandcone::getUpdatedMatrix(u32 timeOffset) {
     m_currentMtx = m_baseMtx;
 
-    u32 t = System::RaceManager::Instance()->timer() - timeOffset;
+    // Retail 0x80687800 compares signed (cmpw).
+    s32 t = static_cast<s32>(System::RaceManager::Instance()->timer() - timeOffset);
 
     if (t > m_startFrame + m_duration) {
         // The sandcone has finished "flowing", so just return the final position.

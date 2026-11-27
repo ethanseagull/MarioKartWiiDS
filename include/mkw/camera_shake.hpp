@@ -1,6 +1,11 @@
 #pragma once
 #include "mkw/math.hpp"
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <game/field/ObjectDirector.hh>
+#include <game/field/obj/ObjectDossun.hh>
+#include <game/field/obj/ObjectQuicksand.hh>
 #include <cmath>
 
 namespace mkw {
@@ -18,7 +23,7 @@ inline constexpr CameraShakeEntry CameraShakeEntries[7][2]={
     {{10,.7f,.9f},{35,.85f,.96f}},   // POW impact 3
     {{1,.55f,.55f},{9,.65f,.85f}},
 };
-enum : unsigned { CameraShakeBlast=1, CameraShakePow1=3 };
+enum : unsigned { CameraShakeThwomp=0, CameraShakeBlast=1, CameraShakeQuicksand=2, CameraShakePow1=3 };
 // Distance rows (.rodata 0x8088db88): full strength within `near`, fading to nothing at
 // `far`, and none more than `height` above or below.
 struct CameraShakeRange { float near, far, height; };
@@ -69,5 +74,50 @@ public:
     }
     void reset(){*this={};}
     Channel side, lift;
+};
+
+// Thwomp landings shake a nearby racer's camera: ObjectDossun::checkFloorCollision (PAL
+// 0x8075f898) calls 0x8059e034 with entry 0, distance row 0 and rumble 33 (none here). The
+// quicksand Thwomp (PAL 0x8080dca4..dce4) adds entry 2 at full strength (0x808a568c = 1) for
+// every racer on frames 1..30 of the sink phase (ObjectQuicksand state 2; table 0x808d05f0+56
+// = 30) through 0x8059e27c. Presentation only.
+class ThwompShake {
+public:
+    void reset(){*this={};}
+    /// `raceFrame` is RaceManager::timer() once the race stage is reached (else 0), as
+    /// ObjectQuicksandThwomp::calc reads it.
+    void step(CameraShake& shake,Vec3 racer,uint32_t raceFrame){
+        namespace F=Kinoko::Field;
+        if(!linked_){
+            linked_=true;count_=0;
+            if(auto* director=F::ObjectDirector::Instance())
+                for(auto* object:director->objects()){
+                    const auto id=object->id();
+                    // Every Thwomp kind carries the dossunc id; the Tsuibi holder has no collision.
+                    if(id!=F::ObjectId::Dossunc&&unsigned(id)!=0x20c)continue;
+                    const auto* thwomp=static_cast<const F::ObjectDossun*>(object);
+                    if(!thwomp->collision()||count_>=thwomps_.size())continue;
+                    thwomps_[count_++]={thwomp,thwomp->landingSerial(),thwomp->mapObj()&&thwomp->mapObj()->id()==0x20c};
+                }
+        }
+        for(unsigned i=0;i<count_;++i){
+            auto& t=thwomps_[i];
+            if(t.quicksand&&F::ObjectQuicksand::state(raceFrame)==2){
+                const auto age=F::ObjectQuicksand::stateFrame(raceFrame);
+                if(age>=1&&age<=30)shake.trigger(CameraShakeQuicksand,1.f);
+            }
+            const auto serial=t.object->landingSerial();
+            if(serial==t.serial)continue;
+            t.serial=serial;++landings;
+            const auto p=t.object->pos();const Vec3 d=Vec3{p.x,p.y,p.z}-racer;
+            const float s=CameraShake::strength(0,length(d),d.y);
+            if(s>=0){shake.trigger(CameraShakeThwomp,s);++shakes;}
+        }
+    }
+    unsigned count()const{return count_;}
+    uint32_t landings=0,shakes=0;
+private:
+    struct Owner{const Kinoko::Field::ObjectDossun* object=nullptr;uint32_t serial=0;bool quicksand=false;};
+    std::array<Owner,32> thwomps_{};bool linked_=false;unsigned count_=0;
 };
 }

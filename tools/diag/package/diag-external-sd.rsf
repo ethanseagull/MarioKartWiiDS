@@ -50,6 +50,7 @@ AccessControlInfo:
    - 1ff00000-1ff7ffff
   MemoryMapping:
    - 1f000000-1f5fffff:r
+   - 1e800000-1e9fffff
   SystemCallAccess:
     ArbitrateAddress: 34
     Break: 60

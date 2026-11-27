@@ -9,11 +9,13 @@
 #include <mkw/animation_budget.hpp>
 #include "mkw/course_object_kinds.hpp"
 #include "mkw/render_quality.hpp"
+#include "mkw/old3ds_profile.hpp"
 #include "mkw/escalator_pieces.hpp"
 #include "mkw/retail_lighting.hpp"
 #include <mkw/render_metrics.hpp>
 #include <mkw/job_worker.hpp>
 #include <mkw/asset_pack.hpp>
+#include <mkw/player_shadow.hpp>
 #include <game/field/ObjectDirector.hh>
 #include <game/field/ObjectDrivableDirector.hh>
 #include <game/field/obj/ObjectEscalator.hh>
@@ -221,6 +223,13 @@ bool openFirePhases(ObjModel& m){
     if(DeferredWrites::prepareWrites&&!renderQuality().reduced&&!m.fireStaging.half[0]&&(stream->frameBytes&15)==0)
         if(auto* both=static_cast<uint8_t*>(linearAlloc(size_t(stream->frameBytes)*2))){m.fireStaging.half[0]=both;m.fireStaging.half[1]=both+stream->frameBytes;}
     m.firePhase=0;m.firePending=false;
+#ifndef MKW_RELEASE
+    if(FILE* f=std::fopen("sdmc:/3ds/MKWiiDS/runtime.log","a")){
+        std::fprintf(f,"fire phases: %lu bytes stride %u in %s, budget %lu, linear_free=%lu\n",(unsigned long)stream->bytes(),stream->stride(),
+            stream->inPieces()?"heap pieces":stream->inLinear()?"LINEAR":"heap",(unsigned long)phaseBudget,(unsigned long)linearSpaceFree());
+        std::fclose(f);
+    }
+#endif
     fireCacheBytes.store(stream->bytes());fireCacheStride.store(stream->stride());
     m.firePhases=std::move(stream);
     return true;
@@ -276,13 +285,22 @@ static bool objectFile(char* out,size_t size,const char* name,const char* ext){
     return false;
 }
 bool ObjectAssets::load(int course){
-    unweldedObjectMeshes=unweldedObjectBanks=0;
+    unweldedObjectMeshes=unweldedObjectBanks=0;billboardObjectModels=0;
     char path[64];std::snprintf(path,sizeof path,"models/course_%02d_visuals.list",course);
-    FILE* list=std::fopen(path,"r");if(!list)return course>=32;
+    FILE* list=nullptr;
+#ifndef MKW_RELEASE
+    // DIAG objlist-loose.txt: objlist-loose/course_NN_visuals.list, a scratch-cooked list, is
+    // read before the pack's (the lines' meshes and banks still come from the pack).
+    if(std::FILE* on=std::fopen("sdmc:/3ds/MKWiiDS/objlist-loose.txt","rb")){std::fclose(on);char loose[64];std::snprintf(loose,sizeof loose,"objlist-loose/course_%02d_visuals.list",course);list=std::fopen(loose,"r");}
+#endif
+    if(!list)list=std::fopen(path,"r");if(!list)return course>=32;
     const auto* race=Kinoko::System::RaceConfig::Instance();
     const bool miiHeads= race&&miiStatuePlayersEligible(race->raceScenario().players,race->raceScenario().playerCount);
     char resource[64],name[64],mesh[96],bankName[96];bool ok=true;
     SharedTextures sharedTextures;
+    // Static meshes already loaded (the cook points repeats at one mesh:
+    // tools/cook_course_objects.py), keyed by file and lighting.
+    std::vector<std::pair<std::string,std::shared_ptr<Model>>> loadedStatic;
     while(std::fscanf(list,"%63s %63s %95s %95s",resource,name,mesh,bankName)==4){
         if(std::strchr(mesh,'/')||std::strstr(mesh,"..")||std::strchr(bankName,'/')||std::strstr(bankName,"..")){ok=false;break;}
         // No Mii racer means the original manager returns no statue identity.
@@ -291,12 +309,27 @@ bool ObjectAssets::load(int course){
         // Battle coin visuals belong exclusively to CoinBattleRuntime. The
         // GOBJ entry registers a spawn, not a permanently placed idle model.
         if(course>=32&&course<=41&&!std::strcmp(resource,"coin"))continue;
-        auto m=std::make_unique<ObjModel>();m->resource=resource;m->name=name;m->model=std::make_unique<Model>();
+        auto m=std::make_unique<ObjModel>();m->resource=resource;m->name=name;
+        if(m->name.size()>4&&!m->name.compare(m->name.size()-4,3,"@bb")){
+            const char mode=m->name.back();
+            if(mode!='1'&&mode!='3'&&mode!='5'){std::snprintf(objectLoadFailure,sizeof objectLoadFailure,"billboard %s",m->name.c_str());ok=false;break;}
+            m->billboard=mode-'0';m->name.resize(m->name.size()-4);++billboardObjectModels;
+        }
         char file[128];unweldedObjectMeshes+=objectFile(file,sizeof file,mesh,".gmdl");
         // Crowds and shadow volumes keep the whole bake (many vertices; no lit surface).
         const bool liveLight=diag::liveLight&&std::strncmp(resource,"group_",6)&&std::strncmp(resource,"monte_",6)&&!endsWith(name,"-shadow");
-        if(!m->model->load(file,false,liveLight)){std::snprintf(objectLoadFailure,sizeof objectLoadFailure,"model %s",file);ok=false;break;}
-        if(shareObjectTextures)sharedTextures.share(*m->model);
+        // A static mesh (no bank) loaded by an earlier line is shared; the
+        // per-course special cases below only touch models they name, the
+        // same for both lines.
+        const bool staticMesh=!std::strcmp(bankName,"-");
+        std::string key=std::string(file)+(liveLight?"#lit":"#baked");
+        for(const auto& [k,shared]:loadedStatic)if(staticMesh&&k==key){m->model=shared;break;}
+        if(!m->model){
+            m->model=std::make_shared<Model>();
+            if(!m->model->load(file,false,liveLight)){std::snprintf(objectLoadFailure,sizeof objectLoadFailure,"model %s",file);ok=false;break;}
+            if(shareObjectTextures)sharedTextures.share(*m->model);
+            if(staticMesh)loadedStatic.emplace_back(key,m->model);
+        }
         if((course==18&&!std::strcmp(resource,"WLscreenGC")&&!std::strcmp(name,"WLscreenGC"))||
            (course==6&&!std::strcmp(resource,"dkmonitor")&&!std::strcmp(name,"dkmonitor"))||
            (course==35&&!std::strcmp(resource,"fks_screen_wii")&&!std::strcmp(name,"fks_screen_wii"))){
@@ -442,6 +475,7 @@ struct CourseObjects::Impl {
     uint32_t lastTimer=0;
     std::vector<float> scratch;
     std::vector<Renderer::ShadowVolume> shadows,skyShadows;
+    std::vector<Renderer::ShadowReceiver> shadowReceivers;
     void link();
     // Re-links after a restarted race builds a new Kinoko scene.
     bool ready();
@@ -587,7 +621,7 @@ bool CourseObjects::loadCourse(int courseId){
 void CourseObjects::Impl::link(){
     readSwitches();
     stadiumBoundsReady=false;stadiumScreens.clear();
-    visuals.clear();drawDistances.clear();linked=true;
+    visuals.clear();drawDistances.clear();linked=true;billboardObjectPlacements=0;
     palmDistance=drawDistance2(K::Field::ObjectId::PalmTree);
     escalatorDistance=drawDistance2(K::Field::ObjectId::Escalator);
     const auto* map=K::System::CourseMap::Instance();
@@ -634,6 +668,8 @@ void CourseObjects::Impl::begin(const Renderer& renderer,unsigned frameTick,Vec3
     assets.serial=renderer.frameSerial();
     const float fov=std::min(renderer.cameraFov(),55.f)/55.f;
     distanceScale=renderer.drawDistance?fov*fov:0;
+    // Old 3DS profile: hidden at drawDistance x retail's distance.
+    if(const float k=old3dsProfile().drawDistance;k>0&&k<1)distanceScale/=k*k;
     stereo=diag::stereoObjectLod&&renderer.stereoWanted();
     // This recorded frame's stereo, read here on the main thread: the object job may run later.
     shadowRatio=diag::stereoShadowCull&&renderer.stereoWanted()?RenderQuality::stereoShadowRatio(renderer.cameraFov()):0;
@@ -839,6 +875,95 @@ void CourseObjects::draw(Renderer& renderer,unsigned tick,Vec3 camera){
     d.replay(renderer,d.objects,1);
     d.recorded=false;
 }
+
+bool CourseObjects::suppressWheelContact(Vec3 center,float radius) const{
+    const auto* director=K::Field::ObjectDrivableDirector::Instance();
+    if(!director||radius<=0)return false;
+    const K::EGG::Vector3f p{center.x,center.y,center.z};
+    for(auto* object:director->objects()){
+        using K::Field::ObjectId;
+        // Original Turibashi/Ami are vertically deforming road surfaces.
+        // Keep VolcanoPiece, factory belts and all other supports unchanged.
+        if(object->id()!=ObjectId::Turibashi&&object->id()!=ObjectId::Ami)continue;
+        // Non-pushing query: no collision entries, status or physical motion
+        // are modified. Include the existing AO fade band so the policy does
+        // not flicker when wheel contact briefly clears during a small hop.
+        if(object->checkSpherePartial(radius+playerShadow::contactHeightTolerance()+2.f,
+            p,p,K::Field::KCLTypeMask(KCL_TYPE_FLOOR),nullptr,nullptr,0))return true;
+    }
+    return false;
+}
+
+const std::vector<Renderer::ShadowReceiver>& CourseObjects::shadowReceivers(Vec3 origin,float radius){
+    auto& d=*impl_;auto& out=d.shadowReceivers;out.clear();
+    // draw() joined the pose worker. Reuse exactly that frame's geometry,
+    // not KMP's initial placement or a guessed supporting quad.
+    float recordRows[12];
+    auto append=[&](const ObjectDrawRecord& record,const C3D_Mtx& transform,
+                    unsigned first,unsigned count,unsigned lighting,const Bounds& local,const float* palette=nullptr,unsigned bones=0){
+        // Static and GPU-skinned blocks share the record transform. Extract
+        // its rows once; rigid parts still use their current bone transform.
+        float partRows[12];const float* rows=recordRows;
+        if(&transform!=&record.transform){
+            for(unsigned i=0;i<3;++i)for(unsigned j=0;j<4;++j)partRows[i*4+j]=transform.r[i].c[3-j];
+            rows=partRows;
+        }
+        const Bounds bounds=transformBoundsPadded(local,rows);
+        if(!playerShadow::intersects(bounds.minimum,bounds.maximum,origin,radius))return;
+        if(!out.empty()){
+            auto& previous=out.back();
+            if(previous.model==record.target&&previous.first+previous.count==first&&
+               previous.lighting==lighting&&previous.palette==palette&&previous.bones==bones&&
+               std::memcmp(&previous.transform,&transform,sizeof transform)==0){
+                previous.count+=count;previous.bounds.include(bounds.minimum);previous.bounds.include(bounds.maximum);return;
+            }
+        }
+        out.push_back({record.target,transform,first,count,lighting,palette,bones,bounds});
+    };
+    for(const auto& record:d.objects.records){
+        if(record.backdrop||record.kind==ObjectDrawRecord::Explosion||!record.target)continue;
+        const auto& model=*record.target;
+        for(unsigned i=0;i<3;++i)for(unsigned j=0;j<4;++j)recordRows[i*4+j]=record.transform.r[i].c[3-j];
+        // Only immutable visibility geometry has a reliable model envelope.
+        // Posed/CPU-deformed objects keep their existing per-part path.
+        if(!record.pose&&!model.visibility.empty()){
+            const auto bounds=transformBoundsPadded({model.minimum,model.maximum},recordRows);
+            if(!playerShadow::intersects(bounds.minimum,bounds.maximum,origin,radius))continue;
+        }
+        for(unsigned j=0;j<model.submeshes.size();++j){
+            const auto& sub=model.submeshes[j];
+            // Transparent/cutout foliage is not a solid driving surface.
+            if(!sub.count||(sub.flags&1)||!playerShadow::receives(sub.flags))continue;
+            if(record.pose==1){
+                if(!record.parts||j>=record.parts->size())continue;
+                for(const auto& part:(*record.parts)[j]){
+                    const float* m=d.objects.palettes.data()+record.palette+part.matrix*12;
+                    C3D_Mtx bone;Mtx_Identity(&bone);
+                    for(unsigned row=0;row<3;++row)for(unsigned col=0;col<4;++col)bone.r[row].c[3-col]=m[row*4+col];
+                    C3D_Mtx world;Mtx_Multiply(&world,&record.transform,&bone);
+                    append(record,world,part.first,part.count,sub.lighting,part.bounds);
+                }
+            }else if(record.pose==2){
+                if(record.bones>Renderer::MaxSkinBones||j>=model.skinVisibility.size())continue;
+                const float* palette=d.objects.palettes.data()+record.palette;
+                for(const auto& block:model.skinVisibility[j])
+                    append(record,record.transform,block.indices.first,block.indices.count,sub.lighting,
+                           posedSkinBounds(block,palette,12),palette,record.bones);
+            }else if(j<model.visibility.size()){
+                for(const auto& block:model.visibility[j].blocks)
+                    append(record,record.transform,block.indices.first,block.indices.count,sub.lighting,block.bounds);
+            }else{
+                // Visibility blocks are optional, just as in drawNow(). Plain
+                // moving platforms still draw their complete submesh. Omitting
+                // them here leaves scene depth but no shadow receiver at all.
+                append(record,record.transform,sub.first,sub.count,sub.lighting,
+                       {model.minimum,model.maximum});
+            }
+        }
+    }
+    return out;
+}
+
 
 void CourseObjects::drawWater(Renderer& renderer){
     // draw() has joined the object job. Keep the recorded materials and pose

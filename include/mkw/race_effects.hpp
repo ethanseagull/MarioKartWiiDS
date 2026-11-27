@@ -40,6 +40,8 @@ public:
     // Important one-shot: queue until simulation calc, ahead of decorative emission.
     void burstBlueSmoke(int spec,const EffectFrame& frame);
     void burst(int spec,const EffectFrame& frame,float specificVelocity);
+    // A stack EGG::Effect given setColor (+0x50) before its update (Chain Chomp rk_wanSmk).
+    void burst(int spec,const EffectFrame& frame,const uint8_t rgba[4]);
     // Persistent attachment: created when it becomes active, moved every step, and faded
     // (emitters stop, particles live on and keep following) when inactive. spec < 0 kills.
     void attach(unsigned slot,int spec,const EffectFrame& frame,bool active);
@@ -70,6 +72,7 @@ public:
     void setParticleLife(unsigned slot,uint16_t life);
     void setParticleScale(unsigned slot,float x,float y);
     void setEmissionRatio(unsigned slot,float ratio);
+    void setRadiationVelocity(unsigned slot,float speed);
     void setSpecificVelocity(unsigned slot,float speed);
     void setVelocity(unsigned slot,Vec3 velocity);
     // EffectSystem::SetProcessCamera (0x800276b0): the view matrix (world to camera, 3x4)

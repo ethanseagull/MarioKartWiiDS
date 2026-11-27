@@ -18,7 +18,8 @@ using FlowSink=void(*)(const FlowBatch&,void* context);
 struct FlowAwardBinding {const char* pane;const char* text=nullptr;int texture=-2;const FlowFont* font=nullptr;bool nativeColor=false;};
 // Source Race.bmg arguments for the opening-pan controls. mode: GP, VS,
 // Time Trials, Balloon Battle, Coin Runners; engine 3 is Mirror.
-struct RaceIntroInfo {unsigned course=0,engine=2,cup=0,race=0,total=4,mode=1;bool teams=false;};
+// courseName: the top screen's course name control; off while the lower screen's info box shows it.
+struct RaceIntroInfo {unsigned course=0,engine=2,cup=0,race=0,total=4,mode=1;bool teams=false,courseName=true;};
 unsigned introIcon(const RaceIntroInfo&);
 // A drawn pane's screen rectangle and depth (Section::Draw LEQUAL depth).
 struct FlowOccluder {float x0,y0,x1,y1,z;};

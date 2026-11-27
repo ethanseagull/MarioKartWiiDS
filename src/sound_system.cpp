@@ -4,6 +4,7 @@
 // absent (silent run), DSP_FlushDataCache before queueing, and teardown resets
 // channels, drops wave buffer references, then frees memory a frame later.
 #include "mkw/console_model.hpp"
+#include "mkw/old3ds_profile.hpp"
 #include <mkw/sound_system.hpp>
 #include <mkw/sound_scene.hpp>
 #include <mkw/menu_movie_audio.hpp>
@@ -359,7 +360,8 @@ public:
 
  NdspHardware() { bridgePool = static_cast<u8*>(linearAlloc(BridgePoolBytes)); }
  ~NdspHardware() override { for (int v = 0; v < VoiceMax; ++v) hardStop(v); if (bridgePool) linearFree(bridgePool); if (pcmLoopPool) linearFree(pcmLoopPool); }
- int voiceCount() const override { return VoiceMax; }
+ // Old 3DS profile: fewer voices; the engine steals by priority past them.
+ int voiceCount() const override { const int n = mkw::old3dsProfile().voices; return n > 0 && n < VoiceMax ? n : VoiceMax; }
 
  const s16* shortLoopPcm(const WaveData& w, int channel) {
   if (!shortAdpcmLoop(w)) return nullptr;

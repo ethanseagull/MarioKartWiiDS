@@ -95,6 +95,86 @@ def surface_roots(root, course):
     if variants & {(2,6),(2,7),(3,6)}:roots.append('rk_stoneTile' if course['id']==9 else 'rk_stoneVolc' if course['id']==3 else 'rk_stone')
     return roots
 
+# Course effect archives the retail EffectManager loads (RMCU 0x806777xx..0x80678040, helper
+# 0x80678138) only when an object of a listed name is placed: archive -> (breff stem, loader
+# object names, {placed object name: roots its class creates}). include/mkw/env_effects.hpp
+# spawns them (each case there cites its retail update). FallBsB/C resolve their emitters
+# from effect/FallBsA, loaded only with a FallBsA. Never loaded by retail (no spawn): Hanabi in a
+# race (it fires only in the CPU demo race, 0x80759f4c), PeachHunsuiGC, EnvSnow, castleballoon1.
+ENV_ARCHIVES = {
+    'EnvFire': ('rk_EnvFire', ('EnvFire',), {'EnvFire': ['rk_EnvFire']}),
+    'EnvKareha': ('rk_EnvKareha', ('EnvKareha',), {'EnvKareha': ['rk_EnvKareha']}),
+    'EnvKarehaUp': ('rk_EnvKarehaUp', ('EnvKarehaUp',), {'EnvKarehaUp': ['rk_EnvKarehaUp']}),
+    'taimatsu': ('rk_taimatsu', ('taimatsu',), {'taimatsu': ['rk_taimatsu']}),
+    'FallBsA': ('rk_fallbasin', ('FallBsA',), {'FallBsA': ['rk_fallbasinA'], 'FallBsB': ['rk_fallbasinB'], 'FallBsC': ['rk_fallbasinC']}),
+    'Fall_MH': ('rk_ridgeFall', ('Fall_MH',), {'Fall_MH': ['rk_ridgeFall']}),
+    'Fall_Y': ('rk_yoshiFalls', ('Fall_Y',), {'Fall_Y': ['rk_yoshiFallsA', 'rk_yoshiFallsB', 'rk_yoshiFallsC']}),
+    'DKfalls': ('rk_64DKfalls', ('DKfalls',), {'DKfalls': ['rk_64DKfalls']}),
+    'Flash_L': ('rk_flashBeginner', ('Flash_L',), {'Flash_L': ['rk_flashBeginner']}),
+    'Flash_B': ('rk_flashBCross', ('Flash_B',), {'Flash_B': ['rk_flashBCross']}),
+    'Flash_M': ('rk_flash64mario', ('Flash_M',), {'Flash_M': ['rk_flash64mario']}),
+    'Flash_S': ('rk_flashSkate', ('Flash_S',), {'Flash_S': ['rk_flashSkate_A', 'rk_flashSkate_B']}),
+    'Flash_W': ('rk_flashWaluigi', ('Flash_W',), {'Flash_W': ['rk_flashWaluigi_A', 'rk_flashWaluigi_B', 'rk_flashWaluigi_C']}),
+    'volsmk': ('rk_volsmk', ('volsmk',), {'volsmk': ['rk_volsmkPre', 'rk_volsmk1T']}),
+    'HeyhoBallGBA': ('rk_HeyhoBallGBA', ('HeyhoBallGBA',), {'HeyhoBallGBA': ['rk_HeyhoBallGBA']}),
+    'boble': ('rk_boble', ('boble',), {'boble': ['rk_boble']}),
+    'Press': ('rk_press', ('Press',), {'Press': ['rk_press']}),
+    'DKship64': ('rk_DKship64', ('DKship64',), {'DKship64': ['rk_DKshipSplash']}),
+    'dc_pillar': ('rk_dc_pillar', ('dc_pillar',), {'dc_pillar': ['rk_dc_pillar']}),
+    'dc_sandcone': ('rk_dc_sandcone', ('dc_sandcone',), {'dc_sandcone': ['rk_dc_sandcone']}),
+    'K_bomb_car': ('rk_K_bomb_car', ('K_bomb_car',), {'K_bomb_car': ['rk_K_bomb_car']}),
+    'cruiser': ('rk_cruiser', ('cruiser', 'cruiserR'), {'cruiser': ['rk_cruiser'], 'cruiserR': ['rk_cruiserSail']}),
+    'venice_hasi': ('rk_venice', ('venice_hasi',), {'venice_hasi': ['rk_venice_hasi']}),
+    'wanwan': ('rk_wanwan', ('wanwan', 'Hwanwan'), {'wanwan': ['rk_wanSmk'], 'Hwanwan': ['rk_wanSmk']}),
+    'TruckWagon': ('rk_truck', ('TruckWagon',), {'TruckWagon': ['rk_truck']}),
+    'pochaMori': ('rk_pochaLeaf', ('pochaMori',), {'pochaMori': ['rk_pochaLeaf', 'rk_pochaLeafY']}),
+}
+# KartEffect +716 (ctor RMCU 0x8068cd08, update 0x806a8694): RKRace's rk_snow on course slot 6.
+SNOW_SLOT = 6
+# EffectManager's cloud handle (ctor RMCU 0x80676e90, calc 0x80676f40): RKRace's rk_kinokoClouds
+# created at the world origin every frame on course slot 2 (Mushroom Gorge).
+KINOKO_SLOT = 2
+# The retail loader's object -> archive folder (EffectManager 0x806777xx..0x80678040): a course
+# archive is loaded when an object of that name is placed.
+LOADER = {'leaf_effect': 'leaf_effect', 'choropu': 'choropu', 'choropu2': 'choropu', 'DonkyCannon_wii': 'DonkyCannon_wii',
+          'DonkyCannonGC': 'DonkyCannonGC', 'tree_cannon': 'tree_cannon', 'oilSFC': 'oilSFC', 'truckChimSmk': 'truckChimSmk',
+          'truckChimSmkW': 'truckChimSmkW', 'VolcanoBall1': 'VolcanoBall1', 'FlamePole': 'FlamePole', 'FlamePole_v': 'FlamePole_v',
+          'FlamePole_v_big': 'FlamePole_v_big', 'dossunc': 'dossun', 'Hanabi': 'Hanabi', 'woodbox': 'woodbox', 'w_woodbox': 'woodbox',
+          'DKrockGC': 'DKrockGC', 'Alarm': 'Alarm', 'Press': 'Press', 'Steam': 'Steam', 'karehayama': 'karehayama',
+          'FireSnake': 'FireSnake', 'FireSnake_v': 'FireSnake', 'pocha': 'pocha', 'pochaYogan': 'pochaYogan', 'pochaMori': 'pochaMori',
+          'Epropeller': 'Epropeller', 'K_bomb_car': 'K_bomb_car', 'K_bomb_car1': 'K_bomb_car1', 'sanbo': 'sanbo', 'sanbo_big': 'sanbo',
+          'entry': 'entry', 'dc_sandcone': 'dc_sandcone', 'wanwan': 'wanwan', 'Hwanwan': 'wanwan', 'KoopaFigure64': 'KoopaFigure64',
+          'HeyhoBallGBA': 'HeyhoBallGBA', 'crab': 'crab', 'taimatsu': 'taimatsu', 'penguin_s': 'penguin_s', 'penguin_m': 'penguin_m',
+          'penguin_l': 'penguin_l', 'cruiser': 'cruiser', 'cruiserR': 'cruiser', 'DKship64': 'DKship64', 'FallBsA': 'FallBsA',
+          'dc_pillar': 'dc_pillar', 'volsmk': 'volsmk', 'Flash_L': 'Flash_L', 'Flash_B': 'Flash_B', 'Flash_S': 'Flash_S',
+          'Flash_M': 'Flash_M', 'Flash_W': 'Flash_W', 'TruckWagon': 'TruckWagon', 'hanachan': 'hanachan', 'BossHanachan': 'hanachan',
+          'koopaFigure': 'koopaBall', 'quicksand': 'quicksand', 'venice_hasi': 'venice_hasi', 'Fall_Y': 'Fall_Y', 'Fall_MH': 'Fall_MH',
+          'starGate': 'starGate', 'StarRing': 'StarRing', 'poihana': 'poihana', 'EnvFire': 'EnvFire', 'EnvKareha': 'EnvKareha',
+          'EnvKarehaUp': 'EnvKarehaUp', 'boble': 'boble', 'DKfalls': 'DKfalls'}
+
+
+def placed_objects(root, course):
+    """Names of the course's GOBJ entries present in a one-player race (presence bit 0)."""
+    flow = (root / 'assets/common/ObjFlow.bin').read_bytes()
+    names = {}
+    for i in range(U16(flow, 0)):
+        e = flow[2 + i * 0x74:2 + (i + 1) * 0x74]
+        names[U16(e, 0)] = e[2:34].split(b'\0')[0].decode()
+    kmp = (root / 'assets/courses' / course['key'] / 'course.kmp').read_bytes()
+    count, head = U16(kmp, 8), U16(kmp, 10)
+    out = {}
+    for s in range(count):
+        at = head + U32(kmp, 16 + s * 4)
+        if kmp[at:at + 4] != b'GOBJ':
+            continue
+        for i in range(U16(kmp, at + 4)):
+            e = at + 8 + i * 0x3c
+            if U16(kmp, e + 0x3a) & 1 and U16(kmp, e) in names:
+                n = names[U16(kmp, e)]
+                out[n] = out.get(n, 0) + 1
+    return out
+
+
 VERSION = 3
 NO_INDEX = 0xffffffff
 # Runtime limits (src/nw4r_ef.cpp, src/race_effects.cpp).
@@ -711,6 +791,16 @@ def cook(root, output, course_only=False, balloon_only=False, coin_only=False, c
                 raise ValueError('Battle coin archives differ: ' + course['key'])
             coin_sources.append({'path': str(path.relative_to(root)), 'sha256': hashes[0], 'breft_sha256': hashes[1]})
         if len(coin_sources) != 10: raise ValueError('Expected all ten original coin archives')
+    # RKRace roots that KartEffect / EffectManager create by course slot (SNOW_SLOT, KINOKO_SLOT);
+    # only those slots' banks select them.
+    global_queue = ['rk_snow', 'rk_kinokoClouds', 'rk_moyaW2D', 'rk_housi2D', 'rk_housi2Ddemo']
+    while global_queue:
+        name = global_queue.pop(0)
+        if name in records: continue
+        records[name] = Emitter(br, idx, name); namespaces[name] = ''; order.append(name)
+        global_queue.extend(records[name].references())
+    env_effects = []
+    order_set = set(order)
     texture_cache = {}
     # Course-only reentry must not expand the legacy aggregate resident bank.
     # The race actually loads its course bank; package_sd reads every bank's
@@ -750,18 +840,66 @@ def cook(root, output, course_only=False, balloon_only=False, coin_only=False, c
         folder = root / 'assets/courses' / course['key'] / 'effect'
         roots = [name for archive, names_ in course_roots.items() if (folder/archive).is_dir() for name in names_]
         roots += surface_roots(root,course)
+        # Course effect archives of placed objects (ENV_ARCHIVES): the course's own copy, one
+        # texture namespace per distinct archive. What the runtime cannot draw skips the archive.
+        env, env_ns, env_roots, env_report = {}, {}, [], []
+        kmp_path = root / 'assets/courses' / course['key'] / 'course.kmp'
+        placed = placed_objects(root, course) if kmp_path.is_file() else {}
+        for archive, (stem, loaders, by_object) in ENV_ARCHIVES.items():
+            p = folder / archive / f'{stem}.breff'
+            wanted = [r for obj, rs in by_object.items() if placed.get(obj) for r in rs]
+            if not wanted or not any(placed.get(n) for n in loaders) or not (p.is_file() and p.with_suffix('.breft').is_file()):
+                continue
+            src_b, pix_b = p.read_bytes(), p.with_suffix('.breft').read_bytes()
+            ns = f"env_{archive}_{hashlib.sha256(src_b + pix_b).hexdigest()[:8]}_"
+            taken = {}
+            try:
+                idx_e = entries(src_b); queue = [r for r in wanted if r in idx_e]
+                if not queue: raise ValueError('none of the roots ' + ', '.join(wanted))
+                while queue:
+                    name = queue.pop(0)
+                    if name in taken: continue
+                    if name in records or name in env:
+                        raise ValueError(name + ' clashes with an emitter already in the bank')
+                    if name not in idx_e: raise ValueError('missing child emitter ' + name)
+                    emitter = Emitter(src_b, idx_e, name)
+                    check(emitter, [])
+                    taken[name] = emitter
+                    queue.extend(emitter.references())
+            except ValueError as e:
+                env_report.append({'archive': archive, 'path': str(p.relative_to(root)), 'skipped': str(e)}); continue
+            if ns not in texture_archives: texture_archives[ns] = (pix_b, entries(pix_b))
+            for name, emitter in taken.items(): env[name] = emitter; env_ns[name] = ns
+            env_roots += [r for r in wanted if r in taken]
+            env_report.append({'archive': archive, 'path': str(p.relative_to(root)), 'objects': {n: placed[n] for n in by_object if placed.get(n)},
+                               'roots': [r for r in wanted if r in taken], 'emitters': list(taken), 'sha256': hashlib.sha256(src_b).hexdigest()})
+        # Slot 6 gets KartEffect's rk_snow, slot 2 EffectManager's clouds and KartEffect's 2D
+        # screen mist / spores (ctor 0x8068cca0.., update 0x8069b490).
+        for gslot, gname in ((SNOW_SLOT, 'rk_snow'), (KINOKO_SLOT, 'rk_kinokoClouds'), (KINOKO_SLOT, 'rk_moyaW2D'),
+                             (KINOKO_SLOT, 'rk_housi2D'), (KINOKO_SLOT, 'rk_housi2Ddemo')):
+            if course['id'] != gslot: continue
+            env_roots.append(gname)
+            # The game resolves the name from a loaded course archive first: refuse one that
+            # holds it (no original course does) rather than cook the wrong record.
+            for archive in sorted({LOADER[n] for n in placed if n in LOADER}):
+                for p in sorted((folder / archive).glob('*.breff')):
+                    if gname in entries(p.read_bytes()):
+                        raise ValueError(f'{course["key"]}: {p.name} holds {gname}')
+        if env_report or env_roots: env_effects.append({'id': course['id'], 'course': course['key'], 'archives': env_report, 'roots': env_roots})
+        records_c = {**records, **env} if env else records
+        namespaces_c = {**namespaces, **env_ns} if env else namespaces
         variants = ['shared','balloon','coin'] if course_id is not None else ['coin'] if coin_only else ['balloon'] if balloon_only else ['shared','balloon'] if 32<=course['id']<=41 else ['shared']
         for mode in variants:
-            mode_roots = roots + (COIN_ROOTS if mode == 'coin' else BALLOON_ROOTS if mode == 'balloon' else [])
+            mode_roots = roots + (COIN_ROOTS if mode == 'coin' else BALLOON_ROOTS if mode == 'balloon' else []) + env_roots
             selected = set(common); queue = list(mode_roots)
             while queue:
                 name = queue.pop()
                 if name in selected: continue
-                if name not in records: raise ValueError('Missing course effect dependency: '+name)
-                selected.add(name); queue.extend(records[name].references())
-            names_ = [name for name in order if name in selected]
+                if name not in records_c: raise ValueError('Missing course effect dependency: '+name)
+                selected.add(name); queue.extend(records_c[name].references())
+            names_ = [name for name in order if name in selected] + [name for name in env if name in selected and name not in order_set]
             bank = f"race-effects-{course['id']:02d}{'-' + mode if mode != 'shared' else ''}.bin"
-            textures_, size_ = write_bank(names_, records, namespaces, texture_archives, output, [], bank, texture_cache)
+            textures_, size_ = write_bank(names_, records_c, namespaces_c, texture_archives, output, [], bank, texture_cache)
             if len(textures_) > 128: raise ValueError('Course effects exceed texture budget: '+course['key'])
             profiles.append({'id':course['id'],'course':course['key'],'mode':mode,'bank':bank,'roots':mode_roots,'emitters':len(names_),'textures':len(textures_),'payload_bytes':size_})
         checks = '&&'.join('effects.find("'+name+'")>=0' for name in roots) or 'true'
@@ -772,7 +910,7 @@ def cook(root, output, course_only=False, balloon_only=False, coin_only=False, c
     (output / ('coin-effect-sources.json' if coin_only else 'balloon-effect-sources.json' if balloon_only else 'race-effects.json')).write_text(json.dumps({
         'source_sha256': hashlib.sha256(br).hexdigest(), 'emitters': aggregate, 'all_course_emitters': order,
         'pocha_source_sha256': hashlib.sha256(pb).hexdigest(),
-        'creature_sources': creature_sources, 'coin_sources': coin_sources,
+        'creature_sources': creature_sources, 'coin_sources': coin_sources, 'course_env_effects': env_effects,
         'textures': [[f[0], f[1], f[2], f[3], f[4], f[5]] for f in files], 'notes': notes}, indent=1) + '\n')
     if not (balloon_only or coin_only) and course_id is None:
         exhausts(root)

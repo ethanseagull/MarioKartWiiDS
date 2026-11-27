@@ -840,7 +840,7 @@ class Builder:
         self.run('picasso-cfl', [sdk / 'tools/bin/picasso', '-o', native_dir / 'vshader.shbin', REPO / 'vendor/cfl-mii/source/vshader.v.pica'])
         binary_header((native_dir / 'vshader.shbin').read_bytes(), native_dir / 'vshader_shbin.h', 'vshader_shbin')
 
-        # Generated headers: the 67 cooked tables, kept apart from the tree's own headers.
+        # Generated headers: the 69 cooked tables, kept apart from the tree's own headers.
         declared = json.loads((REPO / 'config/generated-inputs.json').read_text())['files']
         missing = [n for n in declared if not (self.root / 'include' / n).is_file()]
         if missing:
@@ -1203,6 +1203,12 @@ class Builder:
         tool('menu-ui', ['cook_menu_ui.py', '--jobs', J], 'include/mkw/menu_assets.hpp')
         # The lower screen's UI atlas: its standings rows take the menus' selected-button frame.
         tool('map-ui', ['cook_race_map.py', '--atlas-only'], 'include/mkw/race_map_assets.hpp', 'build/race-map/textures/race_bottom_ui_256.t3x')
+        # The lower screen's Standings view: silhouettes, colours, emblem tiles, numbers, name font.
+        tool('race-standings', ['cook_race_standings.py', '--jobs', J], 'include/mkw/race_standings_assets.hpp', 'build/race-standings/race-standings.json',
+             files=['tools/standings_art.py', 'tools/course_catalog.py', 'tools/race_map_bake.py'])
+        # The course intro's info box on the lower screen: its font, frame art and cup emblems.
+        tool('flyover-info', ['cook_flyover_info.py'], 'include/mkw/flyover_info_assets.hpp', 'build/flyover-info/flyover-info.json',
+             files=['tools/cook_race_flow.py', 'tools/cook_race_items.py', 'tools/menu_layout.py', 'tools/verify_menu_retail.py'])
         tool('menu-footer', ['cook_menu_footer.py'], 'include/mkw/menu_footer_text.inc')
         tool('menu-styles', ['cook_menu_styles.py'], 'include/mkw/menu_text_styles.hpp')
         tool('menu-record-text', ['cook_menu_record_text.py'], 'include/mkw/menu_record_text.inc')
@@ -1325,6 +1331,7 @@ class Builder:
         'staff-camera': ['award-inputs'], 'staff-crowd': ['award-inputs'], 'staff-ui': ['race-items'],
         'maps': ['courses', 'lighting'], 'map-objects': ['objects', 'coconut', 'lighting'], 'runtime-audio': ['audio', 'menu-models'],
         'menu-ui': ['courses', 'garage', 'race-items'], 'map-ui': ['maps', 'menu-ui'], 'menu-footer': ['menu-ui'],
+        'race-standings': ['maps', 'map-ui', 'menu-ui', 'race-items'], 'flyover-info': ['courses', 'race-flow'],
         'menu-styles': ['menu-ui'], 'menu-record-text': ['menu-ui', 'race-items'], 'cup-icons': ['race-items'],
         'movie-header': ['menu-ui'], 'menu-movies': ['movie-header'], 'menu-chapters': ['movie-header'],
         'mii-finish': ['mii-racers'], 'mii-awards': ['award-inputs', 'award-models', 'mii-finish'],

@@ -1,5 +1,4 @@
 #include "CollisionDirector.hh"
-#include "game/field/obj/ObjectCasinoRoulette.hh"
 
 #include "game/field/ObjectDrivableDirector.hh"
 
@@ -78,8 +77,6 @@ bool CollisionDirector::checkSphereFull(f32 radius, const EGG::Vector3f &v0,
     colliding |= ObjectDrivableDirector::Instance()->checkSphereFull(radius, v0, v1, flags, pInfo,
             pFlagsOut, timeOffset);
 
-    if(colliding&&pFlagsOut)ObjectCasinoRoulette::carryCourseContact(pInfo,*pFlagsOut,v0);
-
     if (colliding) {
         if (pInfo) {
             pInfo->tangentOff = pInfo->bbox.min + pInfo->bbox.max;
@@ -120,8 +117,6 @@ bool CollisionDirector::checkSphereFullPush(f32 radius, const EGG::Vector3f &v0,
 
     colliding |= ObjectDrivableDirector::Instance()->checkSphereFullPush(radius, v0, v1, flags,
             pInfo, pFlagsOut, timeOffset);
-
-    if(colliding&&pFlagsOut)ObjectCasinoRoulette::carryCourseContact(pInfo,*pFlagsOut,v0);
 
     if (colliding) {
         if (pInfo) {
@@ -232,8 +227,6 @@ bool CollisionDirector::checkSphereCachedFullPush(f32 radius, const EGG::Vector3
 
     colliding |= ObjectDrivableDirector::Instance()->checkSphereCachedFullPush(radius, pos, prevPos,
             typeMask, colInfo, typeMaskOut, timeOffset);
-
-    if(colliding&&typeMaskOut)ObjectCasinoRoulette::carryCourseContact(colInfo,*typeMaskOut,pos);
 
     if (colliding) {
         if (colInfo) {

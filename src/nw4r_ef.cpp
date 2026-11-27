@@ -471,13 +471,14 @@ void initParticle(Particle& pt,u16 life,Vec3 pos,Vec3 vel,ParticleManager& pm,co
 
 Particle* createParticle(System& s,ParticleManager& pm,u16 life,Vec3 pos,Vec3 vel,const Mtx34* space,float momentum,
                          const InheritSetting* setting,Particle* ref,u16 calcRemain){
+    if(s.liveParticles>=s.particleLimit){++s.particlesRefused;return nullptr;}
     Particle* p=s.particles.alloc();
     if(!p)return nullptr;
     initParticle(*p,life,pos,vel,pm,space,momentum,setting,ref);
     p->calcRemain+=calcRemain;
     pm.particles.append(p);
     p->life=Active;
-    ++s.liveParticles;
+    ++s.liveParticles;if(s.liveParticles>s.particlePeak)s.particlePeak=s.liveParticles;
     return p;
 }
 
@@ -1409,7 +1410,7 @@ void childKey(const u8* curve,const u8* key,u16 seed,Particle& particle,u32 loop
 
 void System::reset(){
     particles.reset();managers.reset();emitters.reset();effects.reset();
-    active={};queueCount=0;liveParticles=0;random.srand(0);calcGroups=drawGroups=~0u;cameraSpaceGroups=0;
+    active={};queueCount=0;liveParticles=0;particlePeak=particlesRefused=0;random.srand(0);calcGroups=drawGroups=~0u;cameraSpaceGroups=0;
     deadParticles.clear();deadManagers.clear();deadEmitters.clear();deadEffects.clear();
 }
 Effect* System::createEffect(const EmitterResource& res,u16 calcRemain,u8 group){
@@ -1456,6 +1457,9 @@ void System::setEmissionRatio(Effect& e,float ratio){
 }
 void System::setSpecificVelocity(Effect& e,float speed){
     for(Emitter* em=e.emitters.head;em;em=em->next)em->prm.velPowerSpecDir=speed;
+}
+void System::setRadiationVelocity(Effect& e,float speed){
+    for(Emitter* em=e.emitters.head;em;em=em->next)em->prm.velPowerRadiationDir=speed;
 }
 void System::setVelocity(Effect& e,Vec3 velocity){e.velocity=velocity;}
 void System::setRootMtx(Effect& e,const Mtx34& m){

@@ -124,6 +124,7 @@ private:
     ObjectHitTable m_hitTableItemObject;
     u8 m_itemOwner = 12; ///< Owner of the current source item callback,12=none.
     u64 m_initRandom = 0; ///< Port: race RNG state at the first init (see reinitForRace).
+    u64 m_initRandom2 = 0; ///< The same for the second race RNG (RaceManager::random2).
 
     fixed_vector<ObjectBase *> m_objects;          ///< All objects live here
     fixed_vector<ObjectBase *> m_calcObjects;      ///< Objects needing calc() live here too.

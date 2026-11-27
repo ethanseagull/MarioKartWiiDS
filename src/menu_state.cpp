@@ -92,7 +92,8 @@ unsigned MenuState::count()const{
  case UiPage::License:return 4;
  case UiPage::Drift:case UiPage::VSMode:return 3;
  case UiPage::Settings:return settingsCustom?6:SettingsPresetCount+1;
- case UiPage::LicenseSettings:return 6;
+ // Change Miis, Erase License, LED, LED Brightness, Speedometer, Timer, Dynamic Shadows.
+ case UiPage::LicenseSettings:return 7;
  case UiPage::VSRules:return 7;
  case UiPage::BattleRules:return 6;
  case UiPage::Mode:return 4;
@@ -222,7 +223,8 @@ void MenuState::chooseSettingsPreset(unsigned row){
  }
  // Old 3DS keeps its fixed values, which are Performance's.
  if(old3dsSettings){unavailable=row!=0;return;}
- settings=settingsPreset(row);
+ // A preset sets the options; the race lower screen's remembered view (standingsView) is not one of them.
+ const bool view=settings.standingsView;settings=settingsPreset(row);settings.standingsView=view;
 }
 void MenuState::advance(unsigned ticks){age+=ticks;focusAge+=ticks;uiFocusAdvance(*this,ticks);}
 
@@ -330,11 +332,12 @@ UiAction MenuState::input(UiInput key){
   focusAge=0;unavailable=false;
   return UiAction::None;
  }
- if(page==UiPage::LicenseSettings&&cursor>=2&&cursor<6&&(key.left||key.right)){
+ if(page==UiPage::LicenseSettings&&cursor>=2&&cursor<7&&(key.left||key.right)){
   if(cursor==2)selection.ledMode=(selection.ledMode+(key.left?3:1))%4;
   else if(cursor==3)selection.ledBrightness=unsigned(std::clamp(int(selection.ledBrightness)+(key.left?-10:10),50,100));
   else if(cursor==4)selection.speedometer=!selection.speedometer;
-  else selection.raceTimer=(selection.raceTimer+(key.left?2:1))%3;
+  else if(cursor==5)selection.raceTimer=(selection.raceTimer+(key.left?2:1))%3;
+  else if(cursor==6){if(old3dsSettings)unavailable=true;else selection.dynamicShadows=!selection.dynamicShadows;}
   focusAge=0;return UiAction::None;
  }
  // Custom's rows are two-way choices: left, right and A switch them. The
@@ -421,6 +424,8 @@ UiAction MenuState::input(UiInput key){
   else if(cursor==3)selection.ledBrightness=selection.ledBrightness>=100?50:selection.ledBrightness+10;
   else if(cursor==4)selection.speedometer=!selection.speedometer;
   else if(cursor==5)selection.raceTimer=(selection.raceTimer+1)%3;
+  // Old 3DS: Dynamic Shadows stays Off.
+  else if(cursor==6){if(old3dsSettings)unavailable=true;else selection.dynamicShadows=!selection.dynamicShadows;}
   break;
  case UiPage::EraseLicense:if(cursor==0){eraseLicenseRequest=int(selection.license);enter(UiPage::License);}else{enter(UiPage::LicenseSettings);cursor=1;uiFocusReset(*this);}break;
  case UiPage::MainMenu:if(cursor==0)enter(UiPage::Mode);else unavailable=true;break;

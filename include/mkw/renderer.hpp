@@ -446,7 +446,14 @@ public:
     bool moveToVram(Texture& texture,std::size_t reserve,VramLeft* left=nullptr);
     // The reverse, for a VRAM texture that outlives the race that placed it:
     // copies it into LINEAR and frees its VRAM. The GPU must be idle.
+    // Also takes textures back from the New 3DS extra memory.
     bool moveToLinear(Texture& texture);
+    // As moveToVram, into the New 3DS extra memory (mkw/extra_memory.hpp), the
+    // tier between VRAM and LINEAR. Never a 4-bit texture units 1-2 may sample
+    // (untested there). The copy is checked byte for byte; a mismatch turns
+    // the tier off for the session and leaves the texture in LINEAR.
+    bool moveToExtra(Texture& texture,VramLeft* left=nullptr);
+    bool extraCpuCopy=false; // DIAG extra-cpu-copy.txt (moveToExtra)
     // The VRAM bytes moveToVram would take: twice the LINEAR size for a
     // widened unit-1 ETC1 texture, 0 for one that must stay in LINEAR.
     std::size_t vramCost(const Texture& texture)const;
@@ -582,6 +589,17 @@ public:
     // multiplied by darkness once. Call after everything that receives shadows.
     struct ShadowVolume {const Model* model;C3D_Mtx transform;};
     void drawShadowVolumes(const ShadowVolume* volumes,unsigned count,float darkness);
+    // Dynamic Shadows (License Settings): the local racer's light-view capture
+    // projected onto the surfaces under it (renderer_player_shadow.cpp).
+    struct ShadowCaster {const Model* model=nullptr;C3D_Mtx transform;const float* palette=nullptr;unsigned bones=0,stride=21,first=0,count=0;bool wheelContact=false,softTerrain=false,movingSupport=false,hideContact=false;Vec3 contactCenter{},contactNormal{0,1,0};float contactRadius=0,contactSpread=1.3f,contactHalfWidth=0;};
+    // A solid receiver from the current course-object draw, including its
+    // exact transform/pose. Rigid parts arrive as individual index ranges.
+    struct ShadowReceiver {const Model* model=nullptr;C3D_Mtx transform;unsigned first=0,count=0,lighting=0;const float* palette=nullptr;unsigned bones=0;Bounds bounds;};
+    // Allocate/release while the rendering thread is idle. Only the local
+    // racer is captured; the same completed texture is shared by both eyes.
+    bool configurePlayerShadow(bool enabled);
+    bool playerShadowReady()const{return playerShadowTarget_!=nullptr;}
+    void drawPlayerShadow(const ShadowCaster* casters,unsigned count,const Model* const* receivers,unsigned receiverCount,Vec3 origin,Vec3 lightDirection,float scale,const ShadowVolume* fallback=nullptr,const ShadowReceiver* objects=nullptr,unsigned objectCount=0,bool actor=false);
     // Translate the rendered image in LCD pixels after perspective projection.
     // Wii menu models are rendered with a centered camera into a texture before
     // their UI pane moves; world translation would change the viewing angle.
@@ -636,6 +654,7 @@ public:
     void drawMenuEffects(RaceEffects&,const Texture*,EffectLayerBuffer&);
     void drawCinemaBars(float topHeight,float bottomHeight,float opacity);
     void drawScreenFade(float opacity,bool white);
+    void setShadowUnion(bool active);
     // Screen-space sprite in top-screen pixels (origin top-left), texture
     // region [0,u1]x[0,v1] modulated by alpha and RRGGBBAA tint.
     // Up to kSpriteCapacity per frame; each submitted quad survives to frame end.
@@ -741,6 +760,17 @@ public:
     // Shadow volumes shade only the screen rectangle their bounds project to,
     // not the whole screen (shadowVolumesNow). A/B: no-shadow-rect.txt.
     bool shadowRects=false;
+    // Dynamic Shadows fill (renderer_player_shadow.cpp), each with its own A/B:
+    // shadowClip: receiver triangles are clipped on the CPU to the projection's
+    // footprint and drawn from a per-frame vertex ring, so fill follows the
+    // shadow's screen area, not whole road triangles (no-shadow-clip.txt).
+    // shadowLocalClear: the per-caster stencil reset redraws those receivers
+    // instead of a whole-screen quad (no-shadow-local-clear.txt; needs shadowClip).
+    // shadowTight: the body footprint is the casters' light-space bounds, not the
+    // whole 128-texel capture box (no-shadow-tight.txt; with shadowClip).
+    // shadowSkip: Lakitu's pass (capture included) is left out in a 2D frame where
+    // none of its receivers reaches the screen (no-shadow-skip.txt; with shadowClip).
+    bool shadowClip=true,shadowLocalClear=true,shadowTight=true,shadowSkip=true;
     // Effect batches set only the state that differs from the last drawn batch (no-effect-state-skip.txt: all).
     bool effectStateSkip=true;
     // Course objects past retail's draw distance (ObjFlow) are not drawn
@@ -754,6 +784,12 @@ public:
     // has been drawn (depth still clear), instead of first under everything.
     // A/B: no-sky-last.txt. setSkyBehind brackets those backdrop draws.
     bool skyLast=false;
+    // Race skies (course-lit backdrop draws) use the projection with its far
+    // plane 8x farther: Rainbow Road's dome reaches 430000, past the 400000
+    // race far plane, and the clipped part showed the clear colour. Backdrops
+    // neither test nor write depth, so only the clipping changes.
+    // A/B: no-sky-far.txt.
+    bool skyFar=true;
     // Model draws whose UV transforms are identity skip them in the vertex
     // shader (uvPlain; the same values). A/B: no-plain-uv.txt.
     bool plainUv=false;
@@ -995,8 +1031,32 @@ private:
     void requestBloomNow(const CourseBloom& settings,const float* clip=nullptr);
     void applyBloomNow();
     void shadowVolumesNow(const ShadowVolume* volumes,unsigned count,float darkness,uint8_t excludedStencil=0);
-    // The vertex shader still has the removed player-shadow paths; these bools stay off.
-    int playerShadowProjectLoc_=-1,shadowCaptureLoc_=-1;
+    void playerShadowNow(const ShadowCaster*,unsigned,const Model* const*,unsigned,Vec3,Vec3,float,const ShadowVolume*,const ShadowReceiver*,unsigned,bool);
+    C3D_Tex playerShadowTex_{},playerShadowClipTex_{};
+    Texture playerContactTex_,playerShadowDepthTex_,playerShadowFadeTex_;
+    int shadowReceiverFadeLoc_=-1;
+    int playerShadowProjectLoc_=-1,shadowCaptureLoc_=-1,shadowDepthLoc_=-1,shadowFloorLoc_=-1;
+    C3D_RenderTarget* playerShadowTarget_=nullptr;
+    C3D_Tex actorShadowTex_{};
+    C3D_RenderTarget* actorShadowTarget_=nullptr;
+    Vec3 playerShadowGround_{},playerShadowGroundNormal_{0,1,0};
+    bool playerShadowReceiver_=false,playerShadowBuried_=false;
+    unsigned playerShadowBuriedEnter_=0,playerShadowBuriedExit_=0;
+    Vec3 playerShadowLastOrigin_{};
+    float playerShadowRoadOpacity_=1.f;
+    bool shadowUnion_=false;
+    void shadowUnionNow(bool active);
+    // configurePlayerShadow(false) without its waitForGpu (shutdown).
+    void freePlayerShadow();
+    // shadowClip's per-frame vertex ring (LINEAR, made with the shadow targets):
+    // two halves exchanged by swapFrameBuffers like the other per-frame buffers. Azahar peak
+    // 534 vertices a frame (2D); a run that does not fit draws whole, as without the clip.
+    static constexpr unsigned kShadowRing=2048;
+    Vertex *shadowRing_=nullptr,*shadowRingAlt_=nullptr;
+    unsigned shadowRingUsed_=0;
+    // Model-space vertex bounds of the casters (shadowTight), by model and buffer.
+    struct ShadowCasterBounds {const Model* model;const void* vertices;uint32_t count;Bounds bounds;};
+    std::vector<ShadowCasterBounds> shadowCasterBounds_;
 
     void environmentUvNow(const C3D_Mtx& transform,const float (&uv)[6],bool texture2=false,float blend=1.f);
     void normalMatrixNow(const C3D_Mtx& modelView,bool environment=false);

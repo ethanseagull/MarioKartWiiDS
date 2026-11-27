@@ -34,6 +34,7 @@ public:
         PowDodged = 1, ///< Retail +0xcc bit 1: the POW spin was cut to one rotation.
         LargeFlip = 2,
         Rotating = 3,
+        AboveFlipStart = 4, ///< Retail +0xcc bit 4: a large flip has lifted the kart 30 above its start.
         LandingFromFlip = 5,
     };
     typedef EGG::TBitFlag<u32, eFlags> Flags;
@@ -180,6 +181,7 @@ private:
     f32 m_pitch;
     f32 m_deltaPitch;
     f32 m_flipPhase;
+    f32 m_flipStartY = 0.0f; ///< Retail +0xfc: pos().y when the large flip started.
     s32 m_groundStartLaunchTimer;
 
     StartActionFunc m_onStart;

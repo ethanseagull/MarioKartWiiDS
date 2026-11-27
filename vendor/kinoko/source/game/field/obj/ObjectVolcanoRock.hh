@@ -26,7 +26,8 @@ public:
 
     /// @addr{0x8081A60C}
     [[nodiscard]] const EGG::Matrix34f &getUpdatedMatrix(u32 timeOffset) override {
-        u32 t = System::RaceManager::Instance()->timer() - timeOffset;
+        // Retail 0x8081A414 works in s32 (divw, signed conversions).
+        s32 t = static_cast<s32>(System::RaceManager::Instance()->timer() - timeOffset);
         m_rtMat.makeRT(m_initialRot, calcPos(t));
         return m_rtMat;
     }
@@ -37,7 +38,7 @@ public:
     }
 
 private:
-    EGG::Vector3f calcPos(u32 frame);
+    EGG::Vector3f calcPos(s32 frame);
 
     const EGG::Vector3f m_initialPos;
     const EGG::Vector3f m_initialRot;

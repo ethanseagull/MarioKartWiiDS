@@ -62,6 +62,7 @@ void RaceManager::findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles, 
         placement = playerCount = 1;
     }
 
+    if (index < m_startPointIndex.size()) m_startPointIndex[index] = static_cast<u16>(startPointIdx);
     MapdataStartPoint *kartpoint = CourseMap::Instance()->getStartPoint(startPointIdx);
 
     if (kartpoint) {
@@ -151,9 +152,11 @@ MapdataJugemPoint *RaceManager::jugemPoint(size_t index) {
             const s16 group = point->battleGroup();
             if (group < 0 || (group < 32 && (m_battleRespawnGroups & (1u << group)))) {
                 m_battleJugemCursor = candidate;
+                if (index < m_battleRespawnJugem.size()) m_battleRespawnJugem[index] = static_cast<s16>(candidate);
                 return point;
             }
         }
+        if (index < m_battleRespawnJugem.size()) m_battleRespawnJugem[index] = 0;
         return map->getJugemPoint(0); // original no-eligible-point fallback
     }
     s8 jugemId = std::max<s8>(player(index).jugemId(), 0);
@@ -272,7 +275,10 @@ void RaceManager::Player::init(size_t index) {
     if (courseMap->getCheckPointCount() != 0 && courseMap->getCheckPathCount() != 0) {
         const EGG::Vector3f &pos = Kart::KartObjectManager::Instance()->object(m_playerIndex)->pos();
         f32 distanceRatio;
-        s16 checkpointId = courseMap->findSector(pos, 0, distanceRatio);
+        // Retail (PAL 0x80534260) searches the start position with findSector's
+        // full-search flag: key checkpoints do not stop it and it goes 12 deep.
+        s16 checkpointId = courseMap->findSector(pos, 0, distanceRatio,
+                g_retailSwitches.checkpointSearch);
 
         m_checkpointId = std::max<s16>(0, checkpointId);
         m_jugemId = courseMap->getCheckPoint(m_checkpointId)->jugemIndex();

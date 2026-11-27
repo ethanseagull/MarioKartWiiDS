@@ -70,7 +70,7 @@ void ObjectBulldozer::initCollision() {
 const EGG::Matrix34f &ObjectBulldozer::getUpdatedMatrix(u32 timeOffset) {
     EGG::Vector3f pos = m_initialPos;
     u32 timer = System::RaceManager::Instance()->timer();
-    f32 posOffset = calcStateAndPosition(m_timeOffset + timer - timeOffset);
+    f32 posOffset = calcStateAndPosition(static_cast<s32>(m_timeOffset + timer - timeOffset));
 
     pos.x = m_left ? pos.x + posOffset : pos.x - posOffset;
     m_rtMat.makeRT(m_initialRot, pos);
@@ -99,8 +99,9 @@ bool ObjectBulldozer::checkCollisionCached(f32 radius, const EGG::Vector3f &pos,
 }
 
 /// @addr{0x807FDE5C}
-f32 ObjectBulldozer::calcStateAndPosition(u32 timeOffset) const {
-    u16 t = timeOffset % m_fullPeriod;
+f32 ObjectBulldozer::calcStateAndPosition(s32 timeOffset) const {
+    // Retail 0x807FDE5C: divw, signed compares (a frame before 0 stays negative).
+    s32 t = timeOffset % static_cast<s32>(m_fullPeriod);
 
     if (t >= m_halfPeriod - m_restFrames) {
         if (t < m_halfPeriod) {

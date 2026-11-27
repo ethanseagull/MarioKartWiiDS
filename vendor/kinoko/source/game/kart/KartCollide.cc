@@ -3,6 +3,7 @@
 
 #include <cstring>
 
+#include "game/kart/KartAction.hh"
 #include "game/kart/KartBody.hh"
 #include "game/kart/KartMove.hh"
 #include "game/kart/KartObject.hh"
@@ -15,6 +16,7 @@
 #include "game/field/ObjectDirector.hh"
 
 #include "game/system/RaceConfig.hh"
+#include "game/system/RetailSwitches.hh"
 
 #include <egg/math/BoundBox.hh>
 #include <egg/math/Math.hh>
@@ -152,7 +154,12 @@ bool KartCollide::checkKartCollision(KartObject *self, KartObject *other) {
             if (sumRadius * sumRadius - distSq <= 0.0f) {
                 continue;
             }
-            const f32 depth = sumRadius - EGG::Mathf::sqrt(distSq);
+            // Retail 0x8056a1ac..0x8056a238: both lengths through frsqrt, the radius sum
+            // as sqrt(sum*sum). Off (no-retail-kart-depth.txt): the plain sum.
+            const f32 depth = (System::g_retailSwitches.kartDepth ?
+                                      EGG::Mathf::sqrt(sumRadius * sumRadius) :
+                                      sumRadius) -
+                    EGG::Mathf::sqrt(distSq);
             delta.normalise();
             const EGG::Vector3f contact = a.worldPos() + delta * a.radius();
             contactMin = contactMin.minimize(contact);
@@ -755,6 +762,16 @@ void KartCollide::calcFallBoundary(Field::KCLTypeMask *mask, bool shortBoundary)
         if (entry->variant() != 7) {
             safe = true;
         }
+    }
+
+    // Retail KartObjectManager flag 0x8 (set for course 18, PAL 0x8058fca0; read at
+    // 0x80571e4c): GCN Waluigi Stadium's boundary is safe during an action while a large
+    // flip holds the kart 30 above its start.
+    if (System::g_retailSwitches.classRules &&
+            System::RaceConfig::Instance()->raceScenario().course == Course::GCN_Waluigi_Stadium &&
+            status().onBit(eStatus::InAction) &&
+            action()->flags().onBit(KartAction::eFlags::AboveFlipStart)) {
+        safe = true;
     }
 
     if (!safe) {

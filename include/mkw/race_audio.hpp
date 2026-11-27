@@ -46,6 +46,7 @@ struct RaceAudioKart {
  std::uint16_t bumpedBy = 0;
  std::uint8_t powerObjectContact = 0; // normal1/wall2 native object callback, even with zero damage.
  bool coinArrival = false; // CoinUnit state6 frame45, retained until push succeeds.
+ bool overtakeVoice = false; // AI::Character OnStartAction4 (0x807371a8): CharacterActor 0x80865580; retained until push.
  bool rainbowFall = false; // a variant 5 fall boundary on a course with "entry" (GOBJ 0x12); retained until push.
  float bump = 0;                // cue::Bump: the bump's signed magnitude
  std::uint8_t fallVoice = 0;    // cue::Fall: the voice type (0x16-0x19)
@@ -133,6 +134,9 @@ void fillRaceAudioItems(RaceAudioFrame& frame, const RaceItems& items);
 // the registry restarts with each race scene.
 void fillRaceAudioObjects(RaceAudioFrame& frame);
 void resetRaceAudioObjects();
+// Placed sound objects (sound_river, sound_sea, sound_sand_fall...) hold their sound at the
+// point of their route nearest the listener. DIAG off-file no-placed-sound.txt: silent, as before.
+inline bool placedObjectSounds = true;
 
 class RaceAudioLayer final : public SoundLayer {
 public:

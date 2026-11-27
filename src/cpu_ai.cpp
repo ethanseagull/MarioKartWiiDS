@@ -12,6 +12,8 @@
 #include <game/kart/KartDynamics.hh>
 #include <game/system/RaceManager.hh>
 #include <game/system/CourseMap.hh>
+#include <game/system/ResourceManager.hh>
+#include <game/system/map/MapdataStartPoint.hh>
 #include <game/system/map/MapdataJugemPoint.hh>
 #include <game/field/ObjectDirector.hh>
 #include <game/field/BoxColManager.hh>
@@ -36,6 +38,38 @@ constexpr float InsideFactor[3]={-.3f,0.f,.7f}; // 808c57bc, 805113d0, 808c57c0
 // fn_1_8148 (PAL 0x805184FC): the respawn point's ENPT link cone, 15 degrees (FIdx 0x8088FA7C),
 // and the initial nearest distance (0x8088FA80).
 constexpr float RespawnLinkCone=32.f/3.f,RespawnLinkFar=9999999.f;
+// USA 0x8051042C, run by CourseMap init (USA 0x8050E6B4) on every KTPT: the start point's ENPT
+// link (MapdataStartPoint +4), a 20 degree cone (FIdx 14.2222 at 0x8088B60C), far 1e8 (0x8088B610).
+constexpr float StartLinkCone=128.f/9.f,StartLinkFar=100000000.f;
+// CourseMap init's ENPT link of a JGPT or KTPT: the ENPT nearest ahead along the point's rotation
+// (rot * ez) inside the cone (lateral in rot * ex / rot * ey), ENPT 0 when none is. The sums keep
+// retail's association: z + (x + y) for each projection.
+unsigned coneLink(const EnemyRoute& route,const EGG::Vector3f& pos,const EGG::Vector3f& rot,float cone,float farDistance){
+    const float tan=EGG::Mathf::SinFIdx(cone)/EGG::Mathf::CosFIdx(cone);
+    EGG::Quatf rpy;rpy.setRPY(DEG2RAD*rot.x,DEG2RAD*rot.y,DEG2RAD*rot.z);
+    const EGG::Vector3f ez=rpy.rotateVector(EGG::Vector3f::ez),ex=rpy.rotateVector(EGG::Vector3f::ex),ey=rpy.rotateVector(EGG::Vector3f::ey);
+    unsigned link=0xff;float nearest=farDistance;
+    for(unsigned n=0;n<route.size()&&n<0xff;++n){
+        const Vec3 a=route.point(n).position;
+        const float dx=a.x-pos.x,dy=a.y-pos.y,dz=a.z-pos.z;
+        const float ahead=ez.z*dz+(ez.x*dx+ez.y*dy);
+        if(!(ahead>=0.f))continue;
+        const float reach=ahead*tan,side=ex.z*dz+(ex.x*dx+ex.y*dy),up=ey.z*dz+(ey.x*dx+ey.y*dy);
+        if(side*side+up*up<reach*reach&&(link==0xff||ahead<nearest)){nearest=ahead;link=n;}
+    }
+    return link==0xff?0:link;
+}
+// The first byte (first ENPT) of the KMP's ENPH entry `group`, 0 without one.
+unsigned groupStart(unsigned group){
+    size_t size=0;const auto* b=static_cast<const uint8_t*>(System::ResourceManager::Instance()->getFile("course.kmp",&size,System::ArchiveId::Course));
+    if(!b||size<16||std::memcmp(b,"RKMD",4))return 0;
+    auto be16=[&](size_t o){return unsigned(b[o])<<8|b[o+1];};
+    auto be32=[&](size_t o){return uint32_t(b[o])<<24|uint32_t(b[o+1])<<16|uint32_t(b[o+2])<<8|b[o+3];};
+    const unsigned sections=be16(8),header=be16(10);
+    for(unsigned i=0;i<sections&&16+4*i+4<=size;++i){const size_t off=header+size_t(be32(16+4*i));
+        if(off+8<=size&&!std::memcmp(b+off,"ENPH",4))return group<be16(off+4)&&off+8+16*size_t(group)<size?b[off+8+16*group]:0;}
+    return 0;
+}
 // AIPathHandler +0x28: the pass mode the handler is initialised with (fn_1_22B228).
 constexpr int InitialPassMode=2;
 constexpr int SlotSearch[20]={2,-2,3,-3,1,-1,4,-4,5,-5,6,-6,7,-7,8,-8,9,-9,10,-10}; // 8089df58
@@ -222,7 +256,9 @@ void CpuAi::updatePath(unsigned racer,Vec3 kartPos){
 unsigned CpuAi::respawnLink(unsigned racer) const{
     // The JGPT KartMove::calcRespawnStart placed the racer at (RaceManager player jugemId),
     // and its ENPT link; an invalid point when there is none.
-    const int jugem=System::RaceManager::Instance()->player(racer).jugemId();
+    // Battle respawns take the next eligible JGPT round-robin (RaceManager::jugemPoint).
+    const auto* manager=System::RaceManager::Instance();
+    const int jugem=setup_.battle&&retailStart?manager->battleRespawnJugem(racer):manager->player(racer).jugemId();
     return jugem>=0&&unsigned(jugem)<respawnLinks_.size()?respawnLinks_[unsigned(jugem)]:route_->size();
 }
 void CpuAi::onOutOfBounds(unsigned racer,unsigned point){
@@ -268,11 +304,22 @@ void CpuAi::reset(const Setup& setup){
     rmState=0;rmFrame=0;rmDuration=0;rmPhase=0;rmInterval=-1;advantageEnabled=false;advantageState=0;advantageValue=0;
     topType=2;cpuCount=humanCount=0;
     respawnLinks_.clear();
+    if(retailStart)frame_=0; // step() takes it from the race's frame counter
     if(!route_)return;
+    auto* map=System::CourseMap::Instance();
+    if(retailStart){
+        // CourseMap_init (PAL 0x80512AF4, USA 0x8050E674) runs fn_1_8148 (USA 0x80514088) on every
+        // JGPT in every mode (Battle too: AIControlBattle::onOutOfBounds, USA 0x80724258, calls the
+        // base restart 0x807230a4 -> 0x8072e528, which reads this link, JGPT +0x28).
+        if(map&&!setup.demo)for(u16 k=0;k<map->getJugemPointCount();++k){
+            const auto* jugem=map->getJugemPoint(k);
+            respawnLinks_.push_back(uint8_t(coneLink(*route_,jugem->pos(),jugem->rot(),RespawnLinkCone,RespawnLinkFar)));
+        }
+    }
     // CourseMap_init (PAL 0x80512AF4) runs fn_1_8148 (0x805184FC) on every JGPT: +0x28 is the
     // ENPT nearest ahead along the point's rotation (rot * ez) inside a 15 degree cone around it
     // (lateral in rot * ex / rot * ey), ENPT 0 when none is.
-    if(auto* map=System::CourseMap::Instance();map&&!setup.battle){
+    else if(map&&!setup.battle){
         const float tan=EGG::Mathf::SinFIdx(RespawnLinkCone)/EGG::Mathf::CosFIdx(RespawnLinkCone);
         for(u16 k=0;k<map->getJugemPointCount();++k){
             const auto* jugem=map->getJugemPoint(k);
@@ -290,6 +337,13 @@ void CpuAi::reset(const Setup& setup){
             respawnLinks_.push_back(uint8_t(link==0xff?0:link));
         }
     }
+    // ENPTController::SetStartingENPT (USA 0x80745880) stores Raceinfo::GetStartENPT (USA 0x80531CE0):
+    // game modes 3/9/10 (Battle), 4 (Mission) and 11 (Award): the ENPT link (+4) of the KTPT that
+    // Raceinfo::getKartStartPoint (USA 0x80531A80) placed the racer at (Kinoko findKartStartPoint,
+    // RaceManager::startPointIndex); 12 (credits; ours: Awards on Ending_Demo): the first byte of the
+    // racer's own ENPH entry (CourseMap ENPH getter USA 0x80510754 with the player index: in
+    // ending_demo each racer's path is one group); every race mode (GP, VS, Time Trials): 0.
+    const bool credits=setup.demo&&System::RaceConfig::Instance()->raceScenario().course==Course::Ending_Demo;
     auto* objects=Kart::KartObjectManager::Instance();
     const unsigned engine=std::min(setup.engineClass,2u),mode=std::min(setup.cpuMode,2u);
     // Start order: grid slots along the start direction (front-most first).
@@ -308,7 +362,14 @@ void CpuAi::reset(const Setup& setup){
         r.rank.position=int(startRank[i]);
         // AIControlBase::initAfterManager / AIControlRace (fn_1_22015C, fn_1_2202F8).
         Path& p=r.path;
-        p.start=uint16_t(route_->nearest(native(kart->pos()),native(kart->bodyFront()),i));
+        // The start point (SetStartingENPT, above).
+        if(!retailStart)p.start=uint16_t(route_->nearest(native(kart->pos()),native(kart->bodyFront()),i));
+        else if(credits)p.start=uint16_t(groupStart(i));
+        else if(setup.demo||setup.battle){
+            const auto* start=map?map->getStartPoint(System::RaceManager::Instance()->startPointIndex(i)):nullptr;
+            p.start=start?uint16_t(coneLink(*route_,start->pos(),start->rot(),StartLinkCone,StartLinkFar)):0;
+        }
+        else p.start=0;
         if(p.start>=route_->size())p.start=0;
         p.goNext=p.goNextDefault=GoNextDistance;p.inside=setup.demo?0.f:InsideFactor[mode];p.passMode=p.passModeReset=2;
         int lane=int((startRank[i]+2)%3)-1; // ((position-1)%3)-1
@@ -753,7 +814,14 @@ void CpuAi::step(uint32_t driveMask,const std::array<unsigned,Capacity>& ranks,c
                  const std::array<bool,Capacity>& finished,unsigned finalLap){
     if(!route_||setup_.demo)return;
     auto* manager=System::RaceManager::Instance();
-    ++frame_;obstaclesValid_=false;
+    // The obstacle search's parity (USA 0x8072CAC0: AI player index & 1 == Raceinfo +0x20 & 1)
+    // is the race's frame counter (Kinoko RaceManager::timer), so it starts again every race.
+    // Retail's AI runs inside calcEnginesUnpaused after Raceinfo::Update has counted this frame;
+    // here the step comes before the scene calc, so add the count that calc is about to make.
+    if(retailStart){using Stage=System::RaceManager::Stage;const Stage stage=manager->stage();
+     frame_=manager->timer()+((stage==Stage::Countdown||stage==Stage::Race||stage==Stage::FinishLocal)?1u:0u);}
+    else ++frame_;
+    obstaclesValid_=false;
     if(setup_.battle)updateBattleSearch(manager->timer());
     if(!setup_.battle)updateRanks(ranks,laps,finished,finalLap);
     const bool racing=manager->isStageReached(System::RaceManager::Stage::Race);
@@ -772,9 +840,10 @@ void CpuAi::step(uint32_t driveMask,const std::array<unsigned,Capacity>& ranks,c
             onOutOfBounds(i,respawnLink(i));
             r.drive={};kart->move()->setCpuRecovery(false);
             r.stuck={};r.avoid={};r.block.next=1;
+            if(setup_.battle)r.battleNavigation.restart();
         }
         r.respawning=respawning;
-        // Battle (no links) resumes from the route point under the drop position.
+        // Without respawn points (no JGPT) the AI resumes from the route point under the drop position.
         // The adapted human path can lag behind a line/shortcut it never
         // followed. Reacquire once when handing the finished human to AI;
         // otherwise only rescue would clear that stale target. Do not reset
@@ -1240,11 +1309,14 @@ int CpuAi::throwDirection(unsigned i,bool held){
     return side;
 }
 int CpuAi::humanAdjacent(unsigned i){
-    // fn_1_224404: a human directly ahead (throw forward) or behind (backward).
+    // fn_1_224404 (USA 0x8072a600): a human directly ahead (throw forward) or behind
+    // (backward); a human on the CPU's own team is skipped (0x80721f50).
     const int count=std::min(humanCount,4);
     if(count<=0)return 0;
+    const auto& scenario=System::RaceConfig::Instance()->raceScenario();
     int k=int(rand(uint32_t(count)));
     for(int n=0;n<count;++n,k=(k+1)%count){
+        if(scenario.teams&&scenario.players[i].team==scenario.players[unsigned(sortedHumans[k])].team)continue;
         const int d=racers_[i].rank.position-racers_[sortedHumans[k]].rank.position;
         if(d==1)return 1;
         if(d==-1)return 2;

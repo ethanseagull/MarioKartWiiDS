@@ -441,12 +441,14 @@ namespace {
 // next input byte (false at the end of the input).
 template<class Next>
 bool decodeLz4FramesFrom(Next&& next,size_t size,unsigned char* header,size_t head,
-                         size_t frameBytes,unsigned stride,unsigned count,unsigned char* out){
+                         size_t frameBytes,unsigned stride,unsigned count,unsigned char* out,unsigned char* const* outs){
  if(!frameBytes||!stride)return false;
  // LZ4 matches reach back at most 65535 bytes: a 64 KiB ring holds every
  // byte a match can copy, so the whole output never has to exist.
  std::unique_ptr<unsigned char[]> ring(new(std::nothrow) unsigned char[65536]);if(!ring)return false;
- size_t pos=0,frameOffset=0;unsigned frame=0;unsigned char* dst=count?out:nullptr;
+ // outs: one destination per kept frame instead of one packed block.
+ auto at=[&](unsigned i){return outs?outs[i]:out+size_t(i)*frameBytes;};
+ size_t pos=0,frameOffset=0;unsigned frame=0;unsigned char* dst=count?at(0):nullptr;
  auto put=[&](unsigned char b){
   ring[pos&0xffff]=b;
   if(pos<head)header[pos]=b;
@@ -454,7 +456,7 @@ bool decodeLz4FramesFrom(Next&& next,size_t size,unsigned char* header,size_t he
    if(dst)*dst++=b;
    if(++frameOffset==frameBytes){
     frameOffset=0;++frame;
-    dst=frame%stride==0&&frame/stride<count?out+size_t(frame/stride)*frameBytes:nullptr;
+    dst=frame%stride==0&&frame/stride<count?at(frame/stride):nullptr;
    }
   }
   ++pos;
@@ -479,12 +481,12 @@ bool decodeLz4FramesFrom(Next&& next,size_t size,unsigned char* header,size_t he
 }
 }
 bool decodeLz4Frames(const unsigned char* in,size_t n,size_t size,unsigned char* header,size_t head,
-                     size_t frameBytes,unsigned stride,unsigned count,unsigned char* out){
+                     size_t frameBytes,unsigned stride,unsigned count,unsigned char* out,unsigned char* const* outs){
  const unsigned char* const end=in+n;
- return decodeLz4FramesFrom([&](unsigned char& b){if(in==end)return false;b=*in++;return true;},size,header,head,frameBytes,stride,count,out);
+ return decodeLz4FramesFrom([&](unsigned char& b){if(in==end)return false;b=*in++;return true;},size,header,head,frameBytes,stride,count,out,outs);
 }
 bool decodeLz4Frames(const char* path,size_t size,unsigned char* header,size_t head,
-                     size_t frameBytes,unsigned stride,unsigned count,unsigned char* out){
+                     size_t frameBytes,unsigned stride,unsigned count,unsigned char* out,unsigned char* const* outs){
  // The stored entry read 64 KiB at a time: no buffer the size of the entry
  // (6.2 MB for the firebar stream, more than a fragmented Old 3DS heap holds).
  const long stored=storedSize(path);if(stored<=0)return false;
@@ -504,7 +506,7 @@ bool decodeLz4Frames(const char* path,size_t size,unsigned char* header,size_t h
   }
   b=chunk[at++];return true;
  };
- const bool ok=decodeLz4FramesFrom(next,size,header,head,frameBytes,stride,count,out);
+ const bool ok=decodeLz4FramesFrom(next,size,header,head,frameBytes,stride,count,out,outs);
  if(!ok)lastReadFailure=readFailed?"lz4 chunk read":"lz4 stream decode";
  return ok&&!readFailed;
 }

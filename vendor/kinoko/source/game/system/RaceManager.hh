@@ -2,6 +2,7 @@
 
 #include "game/system/KPadController.hh"
 #include "game/system/Random.hh"
+#include "game/system/RetailSwitches.hh"
 #include "game/system/map/MapdataCheckPoint.hh"
 #include "game/system/map/MapdataJugemPoint.hh"
 
@@ -135,6 +136,14 @@ public:
     }
 
     [[nodiscard]] MapdataJugemPoint *jugemPoint(size_t index = 0);
+    // The CPU AI's restart points (mkw::CpuAi): the KTPT findKartStartPoint placed a
+    // racer at, and the JGPT its last Battle respawn used (the round-robin pick).
+    [[nodiscard]] u16 startPointIndex(size_t index) const {
+        return index < m_startPointIndex.size() ? m_startPointIndex[index] : 0;
+    }
+    [[nodiscard]] s16 battleRespawnJugem(size_t index) const {
+        return index < m_battleRespawnJugem.size() ? m_battleRespawnJugem[index] : -1;
+    }
     // Original bridge updates the same Battle respawn mask as rising water.
     void setBattleRespawnGroup(u16 group, bool enabled) {
         if (group >= 32) return;
@@ -150,6 +159,14 @@ public:
 
     [[nodiscard]] Random &random() {
         return m_random;
+    }
+
+    /// Retail's second race RNG (RaceManager +0x8, seeded from the scenario's second
+    /// seed, USA 0x8052dcc8; Time Trial seeds it from the clock, USA 0x8052ae18).
+    /// Boos (b_teresa) and CarB draw from it, so they must not advance random(),
+    /// which the objects that move karts share. Off (no-race-random2.txt): random().
+    [[nodiscard]] Random &random2() {
+        return g_retailSwitches.random2 ? m_random2 : m_random;
     }
 
     [[nodiscard]] const Player &player(size_t index = 0) const {
@@ -193,6 +210,8 @@ private:
     void initBattleRespawns();
     void calcBattleRespawns();
     u16 m_battleJugemCursor = 0;
+    std::array<u16, 12> m_startPointIndex{};
+    std::array<s16, 12> m_battleRespawnJugem{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     u16 m_battleGroupMax = 0;
     u16 m_battleGroupCursor = 0;
     u32 m_battleRespawnGroups = 1;
@@ -200,6 +219,7 @@ private:
     std::array<f32,99> m_battleGroupMin{}, m_battleGroupMaxY{};
 
     Random m_random;
+    Random m_random2{RNG_SEED};
     std::array<Player, 12> m_players;
     size_t m_playerCount = 1;
     u8 m_finishCount = 0;

@@ -11,6 +11,10 @@ class BattleNavigation {
 public:
     enum class State {Decide,ItemSearch,CoinSearch,Attack,Approach,Retreat,None};
     void reset(){*this=BattleNavigation{};}
+    // AIControlBattle::onOutOfBounds (USA 0x80724258, offline only: 0x8072c0c4 is false for the
+    // online modes 7-10): after the base respawn restart it requests the Decide state (+0x8C,
+    // via 0x8073b114), which picks the search again on its next calc.
+    void restart(){next_=State::Decide;}
     template<class Random> void step(unsigned role,bool hasItem,bool switched,unsigned difficulty,bool humanMajority,Random random,
                                     bool releasing=false){
         if(next_!=State::None){

@@ -162,6 +162,7 @@ void FlowDrawer::drawIntro(const RaceIntroInfo& in,unsigned frame,FlowSink sink,
  }
  for(unsigned control=0;control<2;++control){
   if(control==1&&in.mode==2)continue;
+  if(control==0&&!in.courseName)continue; // the lower screen's info box shows the course name
   const auto& def=control?IntroCupLayout:IntroCourseLayout;
   const auto& c=control?IntroCupControl:IntroCourseControl;
   // ControlAnimator uses the controller delay then ten linear slide ticks.

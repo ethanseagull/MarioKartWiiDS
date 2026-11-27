@@ -37,9 +37,12 @@ struct UiSelection {
  // The retail unlocked engine-class page switches both 50cc/100cc entries
  // together between their restricted type and the combined kart/bike list.
  bool mixedEngineTypes=false;
- // Per-license port options, separate from retail RKSD (byte 17, the old
- // Dynamic Shadows flag, is written as 0 and ignored).
+ // Per-license port options, separate from retail RKSD (license-options-N.dat).
  unsigned ledMode=0,ledBrightness=100;
+ // Dynamic Shadows (License Settings, byte 17; files from before it hold 0: Off).
+ // The player's and Lakitu's projected shadows (Renderer::drawPlayerShadow)
+ // instead of their shadow volumes. Old 3DS: always Off (row "Not available").
+ bool dynamicShadows=false;
  // Speedometer at the start of a race; SELECT still switches it during one.
  bool speedometer=false;
  // The race timer on the lower screen (License Settings: Timer):

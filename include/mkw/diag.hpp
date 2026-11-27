@@ -183,6 +183,28 @@ inline SplitStats splitStats;
 // sums the bounded rectangles' pixels, to compare with whole-screen quads.
 struct ShadowRectStats {unsigned bounded=0,full=0,empty=0;uint64_t area=0;};
 inline ShadowRectStats shadowRectStats;
+// Dynamic Shadows passes (renderer_player_shadow.cpp; render thread writes, the
+// race heartbeat reads, reset at each race load). Draws and triangles per pass:
+// body (course receivers), contact (wheel AO, mask + shade), object receivers,
+// stencil reset. px: the screen pixels those draws rasterize, from the CPU's
+// clip-space areas of the submitted triangles (an estimate of fill; back faces
+// included); only with playerShadowPixels (DIAG shadow-px.txt), as it costs
+// render-thread time. The reset's whole-screen quad counts 400x240 (x2 at 800px).
+struct PlayerShadowStats {
+    uint32_t passes=0,captures=0,skipped=0,bodyDraws=0,bodyTriangles=0,contactDraws=0,contactTriangles=0,
+             objectDraws=0,objectTriangles=0,resetDraws=0,resetTriangles=0,fullResets=0,localResets=0,
+             ringVertices=0,ringPeak=0,ringFull=0,clippedIn=0,clippedOut=0,tight=0,biasMax=0;
+    uint64_t bodyPx=0,contactPx=0,objectPx=0,resetPx=0,contactScissorPx=0;
+};
+inline PlayerShadowStats playerShadowStats;
+inline bool playerShadowPixels=false;
+// Experiments: shadow-clip-whole.txt (clipped passes take whole triangles), shadow-clip-bias.txt (extra D24 units).
+inline bool shadowClipWhole=false;inline float shadowClipBias=0;
+// shadowClip's depth tolerance for a clipped draw: this many f24 steps of its largest coordinate
+// (renderer_player_shadow.cpp; DIAG shadow-clip-ulps.txt tunes it).
+inline float shadowClipUlps=4;
+// DIAG shadow-clip-offset.txt: the corners move toward the camera instead of a depth bias.
+inline bool shadowClipOffset=false;
 // DIAG hang trace (render-hang.txt): what the render thread executes, written
 // by it, read by the main thread's watchdog when frames stop completing. The
 // last three lists' draws (by list frame % 3) name the models the GPU had.
@@ -303,7 +325,7 @@ inline void textureUseWrite(int race){
     for(const auto& i:info){
         const TextureUseEntry* e=nullptr;for(const auto& u:used)if(u.data==i.data){e=&u;break;}
         const uintptr_t at=uintptr_t(i.data);
-        std::fprintf(f,"%s,%d,%s,%u,%u,%u,%u,%lu,%d,%.3f,%.0f,%u,%u\n",i.owner.c_str(),i.index,at>=0x1F000000u&&at<0x1F600000u?"vram":"linear",
+        std::fprintf(f,"%s,%d,%s,%u,%u,%u,%u,%lu,%d,%.3f,%.0f,%u,%u\n",i.owner.c_str(),i.index,at>=0x1F000000u&&at<0x1F600000u?"vram":at>=0x1E800000u&&at<0x1EA00000u?"extra":"linear",
             i.width,i.height,i.fmt,i.levels,(unsigned long)i.bytes,int(i.unitOne),e?double(e->draws)/frames:0.0,e?double(e->pixels)/frames:0.0,e?e->units:0u,frames);
     }
     std::fclose(f);

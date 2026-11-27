@@ -1,5 +1,6 @@
 #include <3ds.h>
 #include <cstddef>
+#include "mkw/extra_memory.hpp"
 
 // libctru's LINEAR heap allocator is not thread-safe. The menu asset loader
 // creates textures and model buffers on a background thread, so every LINEAR
@@ -32,8 +33,10 @@ extern "C" {
 void* __wrap_linearAlloc(size_t size){Guard g;return keepLinearUsable(__real_linearAlloc(size));}
 void* __wrap_linearMemAlign(size_t size,size_t alignment){Guard g;return keepLinearUsable(__real_linearMemAlign(size,alignment));}
 void* __wrap_linearRealloc(void* mem,size_t size){Guard g;return __real_linearRealloc(mem,size);}
-size_t __wrap_linearGetSize(void* mem){Guard g;return __real_linearGetSize(mem);}
-void __wrap_linearFree(void* mem){Guard g;__real_linearFree(mem);}
+// Extra-memory textures (mkw/extra_memory.hpp) are freed here too: citro3d
+// frees every non-VRAM texture with linearFree.
+size_t __wrap_linearGetSize(void* mem){if(mkw::extraMemory::owns(mem))return mkw::extraMemory::sizeOf(mem);Guard g;return __real_linearGetSize(mem);}
+void __wrap_linearFree(void* mem){if(mkw::extraMemory::owns(mem)){mkw::extraMemory::free(mem);return;}Guard g;__real_linearFree(mem);}
 u32 __wrap_linearSpaceFree(void){Guard g;return __real_linearSpaceFree();}
 }
 
@@ -270,7 +273,7 @@ void freeing(void* p,void* caller){
  RecursiveLock_Unlock(&tableLock);
 }
 void logUnitFourBit(int unit,const C3D_Tex* tex,void* caller){
- log("4-BIT VRAM TEXTURE ON UNIT %d: %08lx %ux%u format %d (caller %08lx)",unit,(unsigned long)uintptr_t(tex->data),unsigned(tex->width),unsigned(tex->height),int(tex->fmt),(unsigned long)uintptr_t(caller));
+ log("4-BIT VRAM/EXTRA TEXTURE ON UNIT %d: %08lx %ux%u format %d (caller %08lx)",unit,(unsigned long)uintptr_t(tex->data),unsigned(tex->width),unsigned(tex->height),int(tex->fmt),(unsigned long)uintptr_t(caller));
 }
 void checkTransfer(u32* in,u32 indim,u32* out,u32 outdim){
  static unsigned bad=0;
@@ -320,7 +323,8 @@ extern "C" void __real_C3D_TexBind(int unit,C3D_Tex* tex);
 extern "C" void __wrap_C3D_TexBind(int unit,C3D_Tex* tex){
  if(unit>0&&tex&&tex->data){
   const uintptr_t at=uintptr_t(tex->data);
-  if(at>=0x1F000000&&at<0x1F600000&&(tex->fmt==GPU_ETC1||tex->fmt==GPU_L4||tex->fmt==GPU_A4)){
+  // Also the New 3DS extra memory (0x1E800000): untested there, so kept out.
+  if(((at>=0x1F000000&&at<0x1F600000)||(at>=0x1E800000&&at<0x1EA00000))&&(tex->fmt==GPU_ETC1||tex->fmt==GPU_L4||tex->fmt==GPU_A4)){
    static uintptr_t seen[64];static unsigned seenCount=0;bool known=false;
    for(unsigned i=0;i<seenCount;++i)known|=seen[i]==at;
    if(!known){if(seenCount<64)seen[seenCount++]=at;

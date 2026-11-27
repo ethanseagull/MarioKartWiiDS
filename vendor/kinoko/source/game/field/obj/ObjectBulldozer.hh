@@ -34,7 +34,7 @@ public:
             const EGG::Vector3f &prevPos, KCLTypeMask mask, CollisionInfo *info,
             KCLTypeMask *maskOut, u32 timeOffset) override;
 
-    [[nodiscard]] f32 calcStateAndPosition(u32 timeOffset) const;
+    [[nodiscard]] f32 calcStateAndPosition(s32 timeOffset) const;
 
     const EGG::Vector3f m_initialPos;
     const EGG::Vector3f m_initialRot;

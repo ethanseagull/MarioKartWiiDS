@@ -87,15 +87,26 @@ struct ItemActor {
     uint32_t age=0;
     uint16_t lifetime=0;
     uint32_t floorTypes=0;
+    // ObjItem +0x138: the KCL mask saved when the item landed (0x807a7f14), read by the
+    // base solid-fall rule.
+    uint32_t landingTypes=0;
     int8_t owner=-1, target=-1;
     uint8_t bounces=0;
     uint8_t bounceLimit=10;
     bool active=false, explosion=false,backwards=false;
     bool settled=false, scattered=false;
     int16_t fuse=300;
+    // A Bob-omb dropped by damage: Obj::InitProperties (0x8079df68) then ObjBomb::OnTetherBreak
+    // (0x8079d0ec; damage scatter 0x807891c4, PlayerInventory::EjectItems 0x807ad82c) give it
+    // ObjBomb's own update (0x8079bcd0) in STATE_TICKING, whose calc (0x8079b3f0) runs the drop
+    // motion and holds the timer at 90 until the item lands (+0x78 bit 4); +0x1ec (dropHold, 270
+    // from OnTetherBreak) re-arms a timer that reaches 0 at 16. +0x78 bit 0x8000 (InitProperties)
+    // skips the proximity fuse.
+    bool dropTicking=false,dropLanded=false;uint16_t dropHold=0;
     uint16_t hitMask=0;
     // RMCU ObjItem +0x78 bit 0x20000: the thrower is immune until the item is older than
-    // ownerImmunity frames (30 thrown, 15 trap throw, 7 ejected by damage).
+    // ownerImmunity frames (30 thrown, 15 trap throw, 7 ejected by damage). A trap keeps it
+    // past 15 while airborne and loses it on a wall bounce (0x80796854, 0x807a8ee4).
     uint8_t ownerImmunity=30;
     float blastInitialScale=1,bounceImpulse=0;
     uint8_t floorBounces=0;
@@ -296,6 +307,12 @@ public:
     // the last one, and held-item scans of racers holding nothing (item_world.cpp); off:
     // no-fast-actor-step.txt.
     static inline bool fastActorStep=true;
+    // Dropped Bob-ombs run ObjBomb's TICKING state (droppedBomb). Off (DIAG no-drop-fuse.txt):
+    // the fuse counts 90 from the drop, as before.
+    static inline bool dropFuse=true;
+    // DIAG: a Bob-omb's landing (event 0) and explosion (1), with its age, drop flags
+    // (1 dropTicking, 2 landed, 4 scattered) and remaining fuse.
+    static inline void (*qaBombLog)(unsigned event,unsigned age,unsigned flags,int fuse,uint32_t frame)=nullptr;
     // Calls f(slot) for the actor slots in ascending order, as a scan of actors()
     // would visit them, but only those in the contact mask (a superset of the
     // active ones: f still checks active). f returns false to stop. Tick thread
@@ -409,6 +426,7 @@ private:
     void takeKartLosses();
     void syncKart(unsigned player);
     void scatterHeld(unsigned player,unsigned slot);
+    void droppedBomb(ItemActor& actor);
     void destroyHeld(unsigned player,unsigned slot);
     void updateScattered(ItemActor& actor,ItemWorldQuery query);
     void updateActors(ItemWorldQuery query);

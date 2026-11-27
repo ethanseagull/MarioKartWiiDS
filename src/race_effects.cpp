@@ -1,5 +1,6 @@
 #include "mkw/render_quality.hpp"
 #include <mkw/race_effects.hpp>
+#include <mkw/old3ds_profile.hpp>
 #include <mkw/asset_pack.hpp>
 #include <cstdio>
 #include <cstring>
@@ -56,7 +57,8 @@ ef::Mtx34 frameMtx(const EffectFrame& f){
 }
 }
 
-RaceEffects::RaceEffects():system_(std::make_unique<ef::System>()){system_->reset();}
+RaceEffects::RaceEffects():system_(std::make_unique<ef::System>()){system_->reset();
+    if(const unsigned limit=old3dsProfile().particleLimit)system_->particleLimit=std::min<u32>(limit,ef::System::ParticleCapacity);}
 RaceEffects::~RaceEffects()=default;
 void RaceEffects::unload(){
     reset();ready=false;
@@ -179,6 +181,7 @@ ef::Effect* RaceEffects::start(int spec,const EffectFrame& frame,uint8_t group){
 }
 void RaceEffects::burst(int spec,const EffectFrame& frame){start(spec,frame);}
 void RaceEffects::burst(int spec,const EffectFrame& frame,float velocity){if(auto* e=start(spec,frame))system_->setSpecificVelocity(*e,velocity);}
+void RaceEffects::burst(int spec,const EffectFrame& frame,const uint8_t rgba[4]){if(auto* e=start(spec,frame))system_->setColor(*e,rgba);}
 bool RaceEffects::alive(unsigned slot) const {
     return slot<slots_.size()&&system_->alive(slots_[slot].effect,slots_[slot].serial);
 }
@@ -200,6 +203,9 @@ void RaceEffects::fade(unsigned slot){
 }
 void RaceEffects::setColor(unsigned slot,const uint8_t rgba[4]){
     if(alive(slot))system_->setColor(*slots_[slot].effect,rgba);
+}
+void RaceEffects::setRadiationVelocity(unsigned slot,float speed){
+    if(alive(slot))system_->setRadiationVelocity(*slots_[slot].effect,speed);
 }
 void RaceEffects::setParticleLife(unsigned slot,uint16_t life){
     if(alive(slot))system_->setParticleLife(*slots_[slot].effect,life);

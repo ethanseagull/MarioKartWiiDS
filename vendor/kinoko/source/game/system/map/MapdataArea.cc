@@ -1,6 +1,7 @@
 #include "MapdataArea.hh"
 
 #include "game/system/CourseMap.hh"
+#include "game/system/RetailSwitches.hh"
 
 namespace Kinoko::System {
 
@@ -114,6 +115,12 @@ bool MapdataAreaCylinder::testImpl(const EGG::Vector3f &pos) const {
 
     f32 f = m_ellipseAspectRatio * relPos.dot(m_forward);
     f32 r = relPos.dot(m_right);
+    // Retail (PAL 0x8051674c..0x8051675c): inside when radius^2 >= r^2 + f^2. The
+    // test was inverted here (and upstream), so a cylinder AREA matched outside it.
+    // Off (no-retail-areas.txt): the inverted test.
+    if (g_retailSwitches.areas) {
+        return m_ellipseRadiusSq >= r * r + f * f;
+    }
     if (r * r + f * f < m_ellipseRadiusSq) {
         return false;
     }
@@ -169,6 +176,21 @@ void MapdataAreaAccessor::init(const MapdataAreaBase::SData *start, u16 count) {
 void MapdataAreaAccessor::sort() {
     for (size_t i = 0; i < m_entryCount; ++i) {
         m_sortedEntries[i] = get(i);
+    }
+
+    // Insertion sort by descending priority. Retail keeps the moved entry and
+    // stores it at its slot after the shift (PAL 0x80515FE0..0x8051603C); a
+    // shift that overwrote it lost areas. Off (no-retail-areas.txt): the old shift.
+    if (g_retailSwitches.areas) {
+        for (size_t i = 1; i < m_entryCount; ++i) {
+            MapdataAreaBase *key = m_sortedEntries[i];
+            size_t j = i;
+            for (; j > 0 && m_sortedEntries[j - 1]->priority() < key->priority(); --j) {
+                m_sortedEntries[j] = m_sortedEntries[j - 1];
+            }
+            m_sortedEntries[j] = key;
+        }
+        return;
     }
 
     for (size_t i = 1; i < m_entryCount; ++i) {

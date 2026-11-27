@@ -470,6 +470,7 @@ void KartAction::startLargeFlipAction() {
     m_velPitch = 22.0f;
     m_flipPhase = 0.0f;
     m_framesFlipping = 0;
+    m_flipStartY = pos().y;
 
     status().setBit(eStatus::LargeFlipHit);
 }
@@ -604,6 +605,13 @@ bool KartAction::calcLargeFlipAction() {
 
     bool decayingRot = false;
     bool stuntRot = false;
+
+    // Retail 0x805692d4..0x80569314 (read by GCN Waluigi Stadium's fall boundary).
+    if (pos().y >= 30.0f + m_flipStartY) {
+        m_flags.setBit(eFlags::AboveFlipStart);
+    } else {
+        m_flags.resetBit(eFlags::AboveFlipStart);
+    }
 
     if (m_flags.onBit(eFlags::LargeFlip)) {
         ++m_framesFlipping;

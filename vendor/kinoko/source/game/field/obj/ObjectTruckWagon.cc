@@ -107,6 +107,7 @@ void ObjectTruckWagonCart::calcState0() {
         // Retail 806d0140: landing from the drop past mid-segment, otherwise rolling.
         if (m_railInterpolator->segmentT() > 0.5f && m_vel.y < 0.0f) {
             cueSound(0x2be, SoundCall::Start); // SE_CN_TRK_TRUCK_GND
+            ++m_landSerial; // presentation only: rk_truck (retail creates it here)
         } else {
             cueSound(0x2bc, SoundCall::Hold); // SE_CN_TRK_TRUCK_MV
         }

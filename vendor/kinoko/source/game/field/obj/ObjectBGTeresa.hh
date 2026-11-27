@@ -20,6 +20,7 @@ public:
     bool mirrorU() const { return m_mirrorU; }
 private:
     void appear();
+    void calcMotion();
     enum class State { FadeIn, Visible, FadeOut, Hidden };
     State m_state = State::Hidden;
     EGG::Vector3f m_origin{}, m_offset{}, m_amplitude{};

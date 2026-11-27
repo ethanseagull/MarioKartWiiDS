@@ -20,6 +20,7 @@
 #include <game/system/RaceManager.hh>
 #include <game/system/CourseMap.hh>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace mkw {
@@ -180,8 +181,53 @@ struct ObjectRegistry {
   object[count] = o; mode[count] = std::uint8_t(m); index[count] = same;
   return count++;
  }
+ // Placed sound objects: their registry slots and sounds, found once as the objects are scanned.
+ std::uint8_t placedCount = 0;
+ std::array<std::uint8_t, 16> placedSlot{};
+ std::array<std::uint16_t, 16> placedSoundId{};
+ std::array<bool, 128> placed{};
 };
 ObjectRegistry registry;
+
+// Placed sound objects (sound_river, sound_sea, sound_sand_fall...): retail class USA
+// 0x806ed4f4 owns a route sound actor (0x80715e88). Its init (0x807160f4) picks the
+// sound by object id (table 0x808c49d8; sound_sea on courses 16 and 23 plays 866 and
+// 897), and every frame (0x80716208) it moves to the point of the object's route
+// nearest to the listener and holds the sound there (not 866 in Time Trial).
+std::uint16_t placedSound(std::uint16_t id, unsigned course) {
+ static constexpr std::uint16_t table[][2] = {{0x5, 0x21d}, {0x6, 0x21f}, {0x8, 0x221}, {0x9, 0x220},
+  {0xa, 0x222}, {0xb, 0x223}, {0xc, 0x226}, {0xd, 0x224}, {0xe, 0x21e}, {0xf, 0x2cd}, {0x10, 0x2b4},
+  {0x15, 0x225}};
+ for (const auto& e : table) {
+  if (e[0] != id) continue;
+  if (e[1] == 546 && course == 16) return 866;
+  if (e[1] == 546 && course == 23) return 897;
+  return e[1];
+ }
+ return 0;
+}
+// Port: the nearest point of the route's polyline (retail 0x806b02d4 measures along
+// the route's own interpolation); a placement without a route stays where it is.
+K::EGG::Vector3f routePoint(const K::System::MapdataGeoObj& geo, const K::EGG::Vector3f& at, const K::EGG::Vector3f& fallback) {
+ const auto* map = K::System::CourseMap::Instance();
+ const int path = geo.pathId();
+ if (!map || path < 0 || path >= int(map->getPointInfoCount())) return fallback;
+ const auto* info = map->getPointInfo(path);
+ if (!info || info->pointCount() == 0) return fallback;
+ const auto& pts = info->points();
+ K::EGG::Vector3f best = pts[0].pos;
+ float bestD = (best - at).squaredLength();
+ for (std::size_t i = 0; i + 1 < info->pointCount(); ++i) {
+  const auto a = pts[i].pos, d = pts[i + 1].pos - a;
+  const float n = d.dot(d);
+  float t = n > 0.0f ? (at - a).dot(d) / n : 0.0f;
+  t = std::clamp(t, 0.0f, 1.0f);
+  const auto p = a + d * t;
+  const float dist = (p - at).squaredLength();
+  if (dist < bestD) { bestD = dist; best = p; }
+ }
+ return best;
+}
 }
 
 void resetRaceAudioObjects() {
@@ -202,10 +248,41 @@ void fillRaceAudioObjects(RaceAudioFrame& f) {
   const int m = dir->flowTable().soundMode(o->id());
   if ((m == 1 || m == 3) && registry.find(o) < 0) registry.add(o, m);
  };
+ const std::size_t scannedBefore = registry.scanned;
  for (std::size_t i = registry.scanned; i < objects.size(); ++i) scan(objects[i]);
  for (std::size_t i = registry.scannedDrivable; i < drivableCount; ++i) scan(drivables->objects()[i]);
  registry.scanned = objects.size();
  registry.scannedDrivable = drivableCount;
+ // Placed sound objects: registered after the course objects' scan, one held cue a frame.
+ const auto& scenario = K::System::RaceConfig::Instance()->raceScenario();
+ const unsigned course = unsigned(scenario.course);
+ if (placedObjectSounds && scannedBefore < objects.size()) {
+  const bool timeTrial = scenario.gameMode == K::System::RaceConfig::Scenario::GameMode::Time_Trial;
+  const unsigned placedBefore = registry.placedCount;
+  for (std::size_t i = scannedBefore; i < objects.size(); ++i) {
+   const auto* o = objects[i];
+   const std::uint16_t sound = o->mapObj() ? placedSound(std::uint16_t(o->id()), course) : 0;
+   if (!sound || (timeTrial && sound == 866) || registry.placedCount >= registry.placedSlot.size()) continue;
+   int slot = registry.find(o);
+   if (slot < 0) slot = registry.add(o, 1);
+   if (slot < 0) continue;
+   registry.placed[unsigned(slot)] = true;
+   registry.placedSlot[registry.placedCount] = std::uint8_t(slot); registry.placedSoundId[registry.placedCount++] = sound;
+  }
+#ifndef MKW_RELEASE
+  // DIAG: the placed sounds this race holds (once, as they are found).
+  if (registry.placedCount != placedBefore) if (std::FILE* log = std::fopen("sdmc:/3ds/MKWiiDS/placed-sounds.txt", "a")) {
+   std::fprintf(log, "course=%u mode=%u placed=%u:", course, unsigned(scenario.gameMode), unsigned(registry.placedCount));
+   for (unsigned k = placedBefore; k < registry.placedCount; ++k) {
+    const auto* o = registry.object[registry.placedSlot[k]];
+    std::fprintf(log, " id=0x%x sound=%u path=%d", unsigned(o->id()), unsigned(registry.placedSoundId[k]), int(o->mapObj()->pathId()));
+   }
+   std::fputc('\n', log); std::fclose(log);
+  }
+#endif
+ }
+ for (unsigned k = 0; k < registry.placedCount && f.objectSounds < f.objectSound.size(); ++k)
+  f.objectSound[f.objectSounds++] = {std::uint16_t(registry.placedSlot[k]), registry.placedSoundId[k], std::uint8_t(RaceAudioObjectSound::Hold), 0.0f, 1.0f};
  K::Field::ObjectBase::SoundCue cues[96];
  const std::size_t n = K::Field::ObjectBase::TakeSoundCues(cues, 96);
  for (std::size_t i = 0; i < n; ++i) {
@@ -218,7 +295,11 @@ void fillRaceAudioObjects(RaceAudioFrame& f) {
  f.objects = registry.count;
  for (int i = 0; i < registry.count; ++i) {
   const auto* o = registry.object[i];
-  const auto& p = o->getPosition();
+  auto p = o->getPosition();
+  if (registry.placed[unsigned(i)]) {
+   const K::EGG::Vector3f eye(f.eye.x, f.eye.y, f.eye.z), target(f.target.x, f.target.y, f.target.z);
+   p = routePoint(*o->mapObj(), eye + (target - eye) * 0.99f, p);
+  }
   f.object[i] = {{p.x, p.y, p.z}, o->scale().x, std::uint16_t(o->id()), registry.mode[i], registry.index[i]};
  }
 }

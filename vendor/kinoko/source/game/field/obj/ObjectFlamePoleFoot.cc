@@ -98,13 +98,14 @@ void ObjectFlamePoleFoot::calcStates() {
 }
 
 f32 ObjectFlamePoleFoot::getScaleY(u32 timeOffset) const {
-    u32 frame = System::RaceManager::Instance()->timer() - timeOffset;
-    if (frame < m_initDelay) {
+    // Retail 0x8067b7c8 (USA): signed compare and divw.
+    s32 frame = static_cast<s32>(System::RaceManager::Instance()->timer() - timeOffset);
+    if (frame < static_cast<s32>(m_initDelay)) {
         return 1.0f;
     }
 
-    s32 cycleFrame = frame - m_initDelay;
-    cycleFrame %= m_extraCycleFrames + CYCLE_FRAMES;
+    s32 cycleFrame = frame - static_cast<s32>(m_initDelay);
+    cycleFrame %= static_cast<s32>(m_extraCycleFrames + CYCLE_FRAMES);
 
     if (cycleFrame >= m_stateStart[5]) {
         return 1.0f;

@@ -6,7 +6,9 @@
 #include "game/kart/KartJump.hh"
 #include "game/kart/KartMove.hh"
 
+#include "game/system/RaceConfig.hh"
 #include "game/system/RaceManager.hh"
+#include "game/system/RetailSwitches.hh"
 
 namespace Kinoko::Kart {
 
@@ -388,7 +390,12 @@ void KartState::calcHandleStartBoost() {
         return;
     }
 
-    if (m_status.onBit(eStatus::Accelerate)) {
+    // PAL 0x80595a14..24: no start boost on the battle courses in slots 34/35.
+    const Course course = System::RaceConfig::Instance()->raceScenario().course;
+    const bool battleSlot = System::g_retailSwitches.battleSlots &&
+            (course == Course::Chain_Chomp_Roulette || course == Course::Funky_Stadium);
+
+    if (!battleSlot && m_status.onBit(eStatus::Accelerate)) {
         if (m_startBoostCharge > START_BOOST_ENTRIES.back().range) {
             m_startBoostIdx = std::numeric_limits<size_t>::max();
         } else if (m_startBoostCharge > START_BOOST_ENTRIES.front().range) {

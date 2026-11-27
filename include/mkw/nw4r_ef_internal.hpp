@@ -44,6 +44,9 @@ struct System {
     // Camera for EMIT_FLAG_15/16 billboard emitters (EffectSystem::mProcessCameraMtx).
     Mtx34 cameraMtx=Mtx34::identity();
     u32 liveParticles=0;
+    // Live particles allowed (Old 3DS profile; kept by reset): emitters create no more past it.
+    u32 particleLimit=ParticleCapacity;
+    u32 particlePeak=0,particlesRefused=0; // since reset (DIAG summary)
     // Groups that calc() calculates and draw lists include, one bit per group. A masked
     // group's effects keep their state: they are neither aged nor drawn until unmasked.
     u32 calcGroups=~0u,drawGroups=~0u;
@@ -63,6 +66,8 @@ struct System {
     // EGG vtable +0x3c (8022333c): Emitter+0x7c is the specific-direction
     // velocity power, not the particle emission ratio.
     void setSpecificVelocity(Effect& e,float speed);
+    // EGG vtable +0x38 (802232a8): Emitter+0x68, the radiation-direction velocity power.
+    void setRadiationVelocity(Effect& e,float speed);
     void setVelocity(Effect& e,Vec3 velocity);
     void setRootMtx(Effect& e,const Mtx34& m);
     bool alive(const Effect* e,u16 serial) const {return e&&e->life!=Closed&&e->life!=Closing&&e->serial==serial;}

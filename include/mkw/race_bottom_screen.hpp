@@ -55,8 +55,14 @@ struct BottomView {
     bool timerLabel=false;        // with its TIME label (Timer: Full)
     uint32_t milliseconds=0;      // official race time (the player's own once finished)
     bool standingsVisible=false;  // Mario Kart 7: from the start of the race
+    bool raceStarted=false;       // the race has started (the Standings view's Time Trial column)
+    bool racerIconsVisible=true;  // racer faces on the map; off during the course preview
     uint32_t tick=0;              // simulation step (animations advance at 60 Hz)
     float fade=0;                 // black over the screen while leaving the race (1 opaque)
+    // The course intro's info box (Mario Kart 7's flyover box in the standings rows' style, with a cup
+    // medallion): the catalog course it names, whether it is in (its entrance plays forwards, its exit
+    // backwards).
+    unsigned infoCourse=~0u;bool infoShown=false;
 };
 // Fills view from the running race, read-only: racer positions, ranks and
 // characters, each racer's item window picture, the local kart's heading,
@@ -74,9 +80,14 @@ public:
     static inline bool fillCover=true;
     // Worst case by construction: fill 1, map 1, start line 24, 24 items as
     // blast rings (4 each) 96, racers 12 x 3 + searchlight 1, column 2,
-    // standings 12 x 6 (up to three score digits in battle), timer 10,
-    // leave fade 1, plus at most 32 map objects = 276.
-    static constexpr unsigned QuadCapacity=BottomView::MaxMapObjects+1+1+24+BottomView::MaxItems*4+12*3+1+2+12*6+10+1;
+    // standings 12 x 6 (up to three score digits in battle; the Standings view's
+    // rows: three frame pieces, face, item, name), timer 10, leave fade 1, plus at
+    // most 32 map objects, plus the Standings view's background, its shade,
+    // silhouette, heading pointer and 12 number boxes (16) = 292.
+    static constexpr unsigned QuadCapacity=BottomView::MaxMapObjects+1+1+24+BottomView::MaxItems*4+12*3+1+2+12*6+10+1+16;
+    // The info box's own quads: inside 1, long edges and the bottom gold up to 9, short edges 6, the medallion
+    // 3 (shadow, ring, emblem), then its glyphs (a cup line and the longest course name).
+    static constexpr unsigned InfoArtCapacity=20,InfoCapacity=InfoArtCapacity+176;
     RaceBottomScreen();
     ~RaceBottomScreen();
     // Race load, render thread idle, after Renderer::reserveBloom() for a race
@@ -90,8 +101,25 @@ public:
     bool active() const;
     bool setMiiPortrait(Renderer&,const NativeMii&);
     const Texture* miiPortrait() const; // resident through the result screen
+    // The info box's textures are resident (not off: no-flyinfo.txt; its emblem is the course's cup's,
+    // copied in by load()). The top screen then leaves the course name to the box while the intro plays.
+    bool infoReady() const;
+    // How many ticks before the intro's end the box must start leaving to be gone by the countdown
+    // (its exit, the entrance backwards; 0 with the DIAG MK7-style switch flyinfo-mk7-entrance.txt).
+    unsigned infoLeadTicks() const;
     // Mario Kart 7's touch: detailed <-> whole course. Battle ignores it.
+    // With the Standings view: close-up <-> Standings.
     void toggleView();
+    // The Standings view (as Mario Kart DS's lower screen; tools/cook_race_standings.py): it replaces
+    // the whole-course map on race courses (not Battle; off: no-ds-standings.txt). The view a race
+    // starts in (settings.dat byte 15, the last one shown): set before load().
+    static inline bool standingsRemembered=false;
+    // True when this race has the Standings view; view: whether Standings is the chosen view now.
+    bool standingsChoice(bool& view) const;
+    // Race load, after load(): the racers' names for the Standings rows (UTF-8: a Mii's name, else
+    // the character's), composed into one texture; also seeds the background's drift direction.
+    void setRacerNames(Renderer&,const std::array<uint8_t,12>& characters,
+                       const std::array<std::array<char,32>,12>& miiNames,unsigned racers);
     // Records the frame's bottom screen (after Renderer::beginBottom()).
     void draw(Renderer& renderer,const BottomView& view);
     // A race frame's bottom screen, with its own beginBottom(): when its

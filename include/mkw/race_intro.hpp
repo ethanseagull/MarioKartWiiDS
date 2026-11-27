@@ -86,6 +86,8 @@ public:
   return Event::None;
  }
  bool demo()const{return demo_;}
+ // Leaving the preview: its end or a skip has started (or is about to start) the fade to black.
+ bool leaving()const{return leaving_||skip_;}
  // The scene fader's opacity over the whole upper screen.
  float black()const{return colorFaderOpacity(float(fade_),!leaving_);}
 private:

@@ -41,7 +41,7 @@ void ObjectTeresa::init() {
         auto &ghost = m_ghosts[i];
         ghost = {};
         ghost.soundSource = m_soundSources[i];
-        ghost.variant = System::RaceManager::Instance()->random().getU32(3);
+        ghost.variant = System::RaceManager::Instance()->random2().getU32(3);
     }
 }
 void ObjectTeresa::appear(Ghost &g) {
@@ -50,7 +50,7 @@ void ObjectTeresa::appear(Ghost &g) {
     auto right = kart->pose().base(0), forward = kart->pose().base(2);
     right.normalise();
     forward.normalise();
-    auto &random = System::RaceManager::Instance()->random();
+    auto &random = System::RaceManager::Instance()->random2(); // USA 8076f85c: RaceManager +0x8
     const f32 x = random.getF32(2000) - 1000;
     const f32 y = random.getF32(250);
     const f32 z = random.getF32(1500) + 1500;
@@ -77,7 +77,7 @@ void ObjectTeresa::calc() {
                 g.alpha = 255;
                 g.state = 1;
                 g.alphaPhase = 0;
-                g.alphaSpeed = 1 + System::RaceManager::Instance()->random().getF32(2);
+                g.alphaSpeed = 1 + System::RaceManager::Instance()->random2().getF32(2);
             }
         } else if (g.state == 1) {
             g.alphaPhase += g.alphaSpeed;

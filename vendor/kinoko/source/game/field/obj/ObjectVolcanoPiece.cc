@@ -323,20 +323,25 @@ const EGG::Matrix34f &ObjectVolcanoPiece::calcShakeAndFall(EGG::Vector3f *vel, u
 }
 
 /// @addr{0x80818FCC}
-ObjectVolcanoPiece::State ObjectVolcanoPiece::calcState(u32 frame) const {
-    if (frame < m_restDuration) {
+ObjectVolcanoPiece::State ObjectVolcanoPiece::calcState(u32 time) const {
+    // Retail compares signed (cmpw, PAL 0x80818FCC): the frame before the
+    // first (timer 0 - 1) is -1, at rest. Unsigned it was "gone", so the
+    // piece's velocity on frame 0 was +9000 up (Tour Sunset Wilds' start sits
+    // on a VolcanoPiece and launched the kart).
+    const s32 frame = static_cast<s32>(time);
+    if (frame < static_cast<s32>(m_restDuration)) {
         return State::Rest;
     }
 
-    if (frame < m_shakeDuration) {
+    if (frame < static_cast<s32>(m_shakeDuration)) {
         return State::Shake;
     }
 
-    if (frame < m_quakeDuration) {
+    if (frame < static_cast<s32>(m_quakeDuration)) {
         return State::Quake;
     }
 
-    if (frame < m_quakeDuration + FALL_DURATION) {
+    if (frame < static_cast<s32>(m_quakeDuration + FALL_DURATION)) {
         return State::Fall;
     }
 
@@ -344,24 +349,26 @@ ObjectVolcanoPiece::State ObjectVolcanoPiece::calcState(u32 frame) const {
 }
 
 /// @addr{0x80819028}
-f32 ObjectVolcanoPiece::calcT(u32 frame) const {
-    if (frame < m_restDuration) {
+f32 ObjectVolcanoPiece::calcT(u32 time) const {
+    // Signed like calcState (retail PAL 0x80819028).
+    const s32 frame = static_cast<s32>(time);
+    if (frame < static_cast<s32>(m_restDuration)) {
         return static_cast<f32>(frame);
     }
 
-    if (frame < m_shakeDuration) {
-        return static_cast<f32>(frame - m_restDuration);
+    if (frame < static_cast<s32>(m_shakeDuration)) {
+        return static_cast<f32>(frame - static_cast<s32>(m_restDuration));
     }
 
-    if (frame < m_quakeDuration) {
-        return static_cast<f32>(frame - m_shakeDuration);
+    if (frame < static_cast<s32>(m_quakeDuration)) {
+        return static_cast<f32>(frame - static_cast<s32>(m_shakeDuration));
     }
 
-    if (frame < m_quakeDuration + FALL_DURATION) {
-        return static_cast<f32>(frame - m_quakeDuration);
+    if (frame < static_cast<s32>(m_quakeDuration + FALL_DURATION)) {
+        return static_cast<f32>(frame - static_cast<s32>(m_quakeDuration));
     }
 
-    return static_cast<f32>(frame - m_quakeDuration - FALL_DURATION);
+    return static_cast<f32>(frame - static_cast<s32>(m_quakeDuration + FALL_DURATION));
 }
 
 } // namespace Kinoko::Field

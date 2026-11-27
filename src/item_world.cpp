@@ -79,7 +79,10 @@ ItemActor& RaceItems::spawn(unsigned player,ItemKind kind,bool backwards,const V
     if(it==actors_.end())it=std::find_if(actors_.begin(),actors_.end(),[](const ItemActor& a){return !a.active;});
     if(it==actors_.end())it=std::max_element(actors_.begin(),actors_.end(),[](const ItemActor& a,const ItemActor& b){return a.age<b.age;});
     forgetReclaimSlot(unsigned(it-actors_.begin()));
-    auto& a=*it;a={};a.kind=kind;a.owner=int8_t(player);a.active=true;++actorSerial_;a.lifetime=kind==ItemKind::Banana?0:1800;
+    auto& a=*it;a={};a.kind=kind;a.owner=int8_t(player);a.active=true;++actorSerial_;
+    // Banana (0x8079ae6c) and Fake Item Box (0x8079e9d4) have no timer: only reclaim,
+    // hits, cannon KCL, solid fall or y < 0 remove them.
+    a.lifetime=kind==ItemKind::Banana||kind==ItemKind::FakeBox?0:1800;
     reclaimOrder_[retailObjectId(kind)].add(unsigned(it-actors_.begin()));
     Vec3 direction=normalized(racers_[player].forward,{0,0,1});
     const bool trap=kind==ItemKind::Banana||kind==ItemKind::FakeBox;
@@ -144,6 +147,7 @@ void RaceItems::explode(ItemActor& actor){
     // OnKill (Blue 0x807a376c / Bob-omb 0x8079cf60): the centre drops by the object's terrain
     // radius (+0xb4) along its up axis; blast state, collision registered at the current
     // scale, owner immunity cleared so the blast also reaches its thrower.
+    if(qaBombLog&&actor.kind==ItemKind::Bobomb)qaBombLog(1,actor.age,unsigned(actor.dropTicking)|unsigned(actor.dropLanded)<<1|unsigned(actor.scattered)<<2,actor.fuse,frame_);
     actor.position=actor.position-normalized(shell(actor.kind)?actor.guidance.up:actor.up,{0,1,0})*actor.terrainRadius;
     actor.previous=actor.position;
     actor.explosion=true;actor.age=0;actor.velocity={};actor.hitMask=0;actor.ownerImmunity=0;
@@ -162,6 +166,26 @@ void RaceItems::shatter(ItemActor& a){
     sound(ItemSoundCue::Break,a);
     events_.push_back({ItemEffect::Break,uint8_t(a.owner<0?12:a.owner),uint16_t(a.kind),a.position,-1,a.scale});
 }
+namespace {
+// Base calc 0x80796558..0x8079667c for ground items (shells use their own copy in
+// shell_guidance.cpp). A fall boundary never removes an item (the attribute test at
+// 0x80796690 cannot pass). Touching solid fall starts a countdown: 180 once landed, 60
+// still in the throw; a landed item with no floor but item road under it also gets 180.
+// It runs every frame once landed, else only on frames without another floor. Bob-ombs
+// never start it. Also resets the air-frame counter on any floor (0x80796580).
+bool groundSolidFallExpired(ItemActor& a){
+    constexpr uint32_t Floors=0x20E80FFF,FloorsNoItemRoad=0x20E80DFF,FloorsNoSolidFall=0x20E80BFF,SolidFall=1u<<0x0a;
+    const bool landed=a.settled;
+    if(landed||(a.floorTypes&Floors)){
+        a.floorContact=true;
+        if(a.kind!=ItemKind::Bobomb&&!a.solidFallTicks){
+            if((a.landingTypes&SolidFall)||((a.floorTypes&SolidFall)&&!a.reflected))a.solidFallTicks=landed?180:60;
+            else if(landed&&!(a.landingTypes&FloorsNoItemRoad)&&!(a.floorTypes&FloorsNoItemRoad))a.solidFallTicks=180;
+        }
+    }
+    return a.solidFallTicks&&(landed||!(a.floorTypes&FloorsNoSolidFall))&&--a.solidFallTicks==0;
+}
+}
 void RaceItems::updateScattered(ItemActor& a,ItemWorldQuery query){
     // Shared source scatter state 292310: advance, XZ damping, gravity.
     // Complex moving-floor/sloped-wall callbacks remain in the source audit.
@@ -169,14 +193,15 @@ void RaceItems::updateScattered(ItemActor& a,ItemWorldQuery query){
     const auto surface=groundContact(query,a);
     a.floorTypes=surface.floorTypes;
     traceLanding(a,surface);
-    if(surface.kill||surface.cannon){a.active=false;return;}
+    if(surface.cannon){a.active=false;return;}
     a.position+=surface.correction+surface.floorMotion;
     if(length(surface.floorNormal)>.1f){
         const auto n=normalized(surface.floorNormal);
-        if(!a.settled)sound(ItemSoundCue::Land,a);
+        if(!a.settled){sound(ItemSoundCue::Land,a);a.landingTypes=surface.floorTypes;}
         a.velocity=scatteredGroundVelocity(a.velocity,n);a.settled=true;a.up=n;
     }else {a.settled=false;a.velocity.y=std::max(-100.f,a.velocity.y-2.2f);}
     if(length(surface.wallNormal)>.1f){const auto n=normalized(surface.wallNormal);float into=dot(a.velocity,n);if(into<0)a.velocity=a.velocity-n*(2*into);}
+    if(groundSolidFallExpired(a))a.active=false;
 }
 void RaceItems::resolveCourseObjects(ItemActor& actor){
     if(!actor.active||actor.radius<=0||blueFlight(actor))return;
@@ -225,14 +250,14 @@ void RaceItems::syncReclaimOrder(){
     for(unsigned i=nextActorSlot(0);i<MaxActors;i=nextActorSlot(i+1)){
         const auto& a=actors_[i];if(!a.active)continue;
         auto& h=reclaimOrder_[retailObjectId(a.kind)];h.add(i);
-        if(a.settled&&(a.scattered||a.kind==ItemKind::Banana))h.land(i);
+        if(a.settled&&(a.scattered||trapItem(a.kind)))h.land(i);
     }
 }
 void RaceItems::updateActors(ItemWorldQuery query){
     syncReclaimOrder();
     const unsigned phase=nativeReclaimPhase_?reclaimPhase_:(frame_&7);
     const auto eligible=[&](unsigned slot){const auto& a=actors_[slot];
-        return a.active&&groundReclaimEligible(a.age,a.scattered||a.kind==ItemKind::Banana,a.settled,a.explosion);};
+        return a.active&&groundReclaimEligible(a.age,a.scattered||trapItem(a.kind),a.settled,a.explosion);};
     // USA8078d464 uses the gameplay limit, not allocated capacity. USA80790844
     // computes the global pressure AFTER all holders, so every holder reads the
     // previous step's value. All fifteen retail +0x5c weights are one.
@@ -269,7 +294,7 @@ void RaceItems::updateActors(ItemWorldQuery query){
             // Cloud are exempt; neither is an actor here). Every course runs above y 400.
             if(a.active&&!a.explosion&&a.position.y<0)a.active=false;
             if(!a.active){h.remove(order[k]);continue;}
-            if(a.settled&&(a.scattered||a.kind==ItemKind::Banana))h.land(order[k]);
+            if(a.settled&&(a.scattered||trapItem(a.kind)))h.land(order[k]);
             resolveCourseObjects(a);if(!a.active)continue;
             for(unsigned owner=0;owner<count_&&a.active;++owner){
                 // resolveActorHeld returns at once for an empty slot.
@@ -297,11 +322,14 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
             if(a.age>=a.lifetime)a.active=false;
             return;
         }
-        if(!a.scattered&&(a.kind==ItemKind::GreenShell||a.kind==ItemKind::RedShell)){
+        if(!a.scattered&&(a.kind==ItemKind::GreenShell||a.kind==ItemKind::RedShell||trapItem(a.kind))){
             // Base calc 0x807960b8 / 0x80796580 / 0x80796764: frames without a Q1 floor,
             // capped at 6; the airborne flag is the previous update's count >= 5.
             if(a.age>1){if(a.floorContact)a.airFrames=0;a.airborne=a.airFrames>=5;}
             a.floorContact=a.reflected=false;if(a.airFrames<=5)++a.airFrames;
+            // 0x80796854: a thrown trap's owner flag clears past age 15 only on a frame it is
+            // not airborne; while airborne the window follows its age.
+            if(trapItem(a.kind)&&a.ownerImmunity>=15&&a.ownerImmunity<255&&a.age==a.ownerImmunity+1u&&a.airborne)++a.ownerImmunity;
         }
         const auto prop=itemProperties(unsigned(a.kind));
         a.scale=std::min(prop.releasedScale,a.scale+(a.backwards?prop.dropGrowth:prop.growth));
@@ -318,10 +346,18 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
             a.active=false;return;
         }
         if(a.kind==ItemKind::Bobomb){
+            // A dropped Bob-omb (ItemActor::dropTicking): the TICKING calc (0x8079b3f0) runs
+            // before the timer and, while +0x78 bit 4 says it is still in the drop state, sets
+            // timer 90 (0x8079b4ac); landing (0x807a7eb0) clears the bit.
+            if(a.dropTicking&&!a.dropLanded)a.fuse=int16_t(BombDropFuse);
             // 28fd70 checks before decrement; proximity only shortens a fuse.
             if(a.fuse<0){explode(a);return;}
             --a.fuse;
-            if(a.floorBounces<3&&(!a.backwards||a.floorBounces<2)){
+            // ObjBomb::Update 0x8079bdb8..de4: while +0x1ec is positive it counts down, and a
+            // timer reaching 0 in that window restarts at 16.
+            if(a.dropHold){--a.dropHold;if(a.fuse==0)a.fuse=16;}
+            // 0x8079be18: a dropped object (+0x78 bit 0x8000, InitProperties) has no proximity fuse.
+            if(!a.dropTicking&&a.floorBounces<3&&(!a.backwards||a.floorBounces<2)){
                 float nearest=std::numeric_limits<float>::infinity();
                 for(unsigned i=0;i<count_;++i)if(int(i)!=a.owner&&!racers_[i].unavailable&&!racers_[i].finished&&!invincible(i)){
                     const Vec3 d=a.position-racers_[i].position;nearest=std::min(nearest,dot(d,d));
@@ -331,6 +367,8 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
         }
         if(a.scattered){
             updateScattered(a,query);
+            // The drop state's landing (0x807a7eb0 from 0x8079e780) ends the timer hold for good.
+            if(a.dropTicking&&a.settled&&!a.dropLanded){a.dropLanded=true;if(qaBombLog)qaBombLog(0,a.age,3u|(a.scattered?4u:0u),a.fuse,frame_);}
         }else if(a.kind==ItemKind::RedShell||a.kind==ItemKind::BlueShell){
             updateShell(a,query);
         }else if(a.kind==ItemKind::GreenShell){
@@ -349,7 +387,7 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
             if(query){
                 const auto surface=groundContact(query,a);a.position+=surface.correction+surface.floorMotion;a.floorTypes=surface.floorTypes;
                 traceLanding(a,surface);
-                if(surface.kill||surface.cannon){a.active=false;return;}
+                if(surface.cannon){a.active=false;return;}
                 if(length(surface.floorNormal)>.1f){
                     const Vec3 normal=normalized(surface.floorNormal);const float into=dot(a.velocity,normal);
                     a.up=normal;
@@ -363,7 +401,7 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
                             if(a.kind==ItemKind::Bobomb&&a.backwards)a.bounceImpulse*=.8f;
                         }else{
                             // ObjThrowable::OnFinishThrow (807a8078): the object's land sound once.
-                            if(!a.settled)sound(ItemSoundCue::Land,a);
+                            if(!a.settled){sound(ItemSoundCue::Land,a);a.landingTypes=surface.floorTypes;}
                             a.velocity={};a.settled=true;
                         }
                     }else if(into<0)a.velocity=a.velocity-normal*into;
@@ -375,6 +413,12 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
                 }
                 if(length(surface.wallNormal)>.1f){const Vec3 normal=normalized(surface.wallNormal);const float into=dot(a.velocity,normal);
                     if(a.kind==ItemKind::RedShell){shatter(a);return;}
+                    if(trapItem(a.kind)){
+                        // 0x807a8e8c: a wall facing up (normal y >= .98) removes a trap; any
+                        // other wall marks it reflected and ends the owner window (0x807a8ee4).
+                        if(normal.y>=.98f&&a.kind!=ItemKind::Bobomb){a.active=false;return;}
+                        a.reflected=true;a.ownerImmunity=0;
+                    }
                     if(into<0){
                         a.velocity=a.velocity-normal*(2*into);a.flightDirection=normalized(a.flightDirection-normal*(2*dot(a.flightDirection,normal)),a.flightDirection);
                         if(++a.bounces>=a.bounceLimit){shatter(a);return;}
@@ -386,6 +430,7 @@ void RaceItems::updateActor(ItemActor& a,ItemWorldQuery query){
                 const float terminal=std::clamp(100.f+150.f*(float(a.age)-150.f)/(30.f-150.f),100.f,250.f);
                 a.velocity.y=std::max(-terminal,a.velocity.y-gravity);
             }
+            if(groundSolidFallExpired(a)){a.active=false;return;}
             if(a.position.y<-100000){a.active=false;return;}
         }
     }

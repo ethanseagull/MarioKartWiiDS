@@ -22,6 +22,7 @@
 #include "game/system/CourseMap.hh"
 #include "game/system/RaceManager.hh"
 #include "game/system/RaceConfig.hh"
+#include "game/system/RetailSwitches.hh"
 #include "game/system/map/MapdataCannonPoint.hh"
 #include "game/system/map/MapdataJugemPoint.hh"
 
@@ -1588,6 +1589,26 @@ void KartMove::calcRotation() {
     }
 
     calcVehicleRotation(turn);
+
+    // PAL 0x8057cb5c..0x8057cda0: on course 34 (Chain Chomp Roulette's slot) the
+    // kart turns with the floor it rides: the yaw the object velocity (the deck's
+    // motion, dynamics +0xB0) sweeps about the world origin, added to the main rotation.
+    if (System::g_retailSwitches.battleSlots &&
+            System::RaceConfig::Instance()->raceScenario().course == Course::Chain_Chomp_Roulette) {
+        const EGG::Vector3f &objVel = dynamics()->movingObjVel();
+        if (objVel.squaredLength() > std::numeric_limits<f32>::epsilon()) {
+            const EGG::Vector3f half = EGG::Vector3f(objVel.x, 0.0f, objVel.z) * 0.5f;
+            EGG::Vector3f p = pos();
+            p.y = 0.0f;
+            const f32 dist = EGG::Mathf::sqrt((p + half).squaredLength());
+            const f32 step = EGG::Mathf::sqrt(half.squaredLength());
+            if (dist > 0.0f) {
+                EGG::Quatf q;
+                q.setAxisRotation(2.0f * EGG::Mathf::atan2(step, dist), m_up);
+                dynamics()->setMainRot(q.multSwap(dynamics()->mainRot()));
+            }
+        }
+    }
 }
 
 /// @stage 2
@@ -1656,6 +1677,13 @@ void KartMove::calcVehicleSpeed() {
                 m_acceleration = status.onBit(eStatus::Star, eStatus::ThunderCloud, eStatus::Mega) ?
                         (water ? calcVehicleAcceleration() : 3.0f) :
                         status.onBit(eStatus::HalfPipeRamp) ? 5.0f : calcVehicleAcceleration();
+                // Retail PAL 0x8057ae30 (USA 0x805745cc): a slipstream boost
+                // accelerates at slipstreamAccel (USA 0x808b12d4, 0.7), ahead of the
+                // half-pipe's 5.0.
+                if (g_retailSlipstreamAccel && !water && m_slipstreamBoost &&
+                        status.offBit(eStatus::Star, eStatus::ThunderCloud, eStatus::Mega)) {
+                    m_acceleration = 0.7f;
+                }
             } else {
                 if (status.offBit(eStatus::Brake) ||
                         status.onBit(eStatus::DisableBackwardsAccel, eStatus::SoftWallPush)) {
