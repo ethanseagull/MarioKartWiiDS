@@ -4,6 +4,9 @@
 
 #include <abstract/File.hh>
 
+#include <cstdlib>
+#include <new>
+
 namespace Kinoko::System {
 
 /// @addr{0x8052DD40}
@@ -33,12 +36,17 @@ void RaceConfig::initRace() {
 void RaceConfig::initControllers() {
     ASSERT(m_raceScenario.playerCount >= 1 && m_raceScenario.playerCount <= 12);
     KPadDirector::Instance()->setPlayerCount(m_raceScenario.playerCount);
+    KPadDirector::Instance()->resetGhostSlots();
+    size_t ghostSlot = 0;
     for (size_t i = 0; i < m_raceScenario.playerCount; ++i) {
         switch (m_raceScenario.players[i].type) {
         case Player::Type::Ghost:
-            // One ghost stream: the trace/replay as player 0, or a Time Trials
-            // staff ghost beside the local racer (retail Scenario::initGhost).
-            initGhost(i);
+            // The trace/replay as player 0, or a Time Trials ghost beside the local
+            // racer (retail Scenario::initGhost). Further ghost players (multi-ghost
+            // Time Trials, as Retro Rewind's GhostManager.cpp LoadAllGhosts) each take
+            // their own stream, in player order.
+            initGhost(i, ghostSlot < 4 ? ghostSlot : 3);
+            ++ghostSlot;
             break;
         case Player::Type::Local:
         case Player::Type::CPU:
@@ -54,8 +62,26 @@ void RaceConfig::initControllers() {
 /// @addr{0x8052EEF0}
 /// @brief Initializes the ghost.
 /// @details This is normally scoped within RaceConfig::Scenario, but Kinoko doesn't support menus.
-void RaceConfig::initGhost(size_t index) {
-    GhostFile ghost(m_ghost);
+void RaceConfig::setGhost(const u8 *rkg, size_t slot) {
+    if (slot == 0) {
+        m_ghost = rkg;
+        return;
+    }
+    ASSERT(slot <= m_extraGhosts.size());
+    // Made once, outside the EGG heaps: setGhost runs while the race scene's heap is
+    // current, which goes with the scene; RaceConfig lives in the root scene.
+    RawGhostFile *&file = m_extraGhosts[slot - 1];
+    if (!file) {
+        void *block = std::malloc(sizeof(RawGhostFile));
+        ASSERT(block);
+        file = ::new (block) RawGhostFile();
+    }
+    *file = rkg;
+}
+
+void RaceConfig::initGhost(size_t index, size_t slot) {
+    const RawGhostFile &raw = slot == 0 || !m_extraGhosts[slot - 1] ? m_ghost : *m_extraGhosts[slot - 1];
+    GhostFile ghost(raw);
 
     // A replay picks the course; a raced ghost was loaded for the chosen one.
     if (index == 0) {
@@ -66,7 +92,7 @@ void RaceConfig::initGhost(size_t index) {
     player.vehicle = ghost.vehicle();
     player.driftIsAuto = ghost.driftIsAuto();
 
-    KPadDirector::Instance()->setGhostPad(ghost.inputs(), ghost.driftIsAuto(), index);
+    KPadDirector::Instance()->setGhostPad(ghost.inputs(), ghost.driftIsAuto(), index, slot);
 }
 
 /// @addr{0x8052FE58}
@@ -89,6 +115,13 @@ RaceConfig::RaceConfig() = default;
 
 /// @addr{0x80530038}
 RaceConfig::~RaceConfig() {
+    for (auto *&file : m_extraGhosts) {
+        if (file) {
+            file->~RawGhostFile();
+            std::free(file);
+            file = nullptr;
+        }
+    }
     if (s_instance) {
         s_instance = nullptr;
         WARN("RaceConfig instance not explicitly handled!");

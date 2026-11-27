@@ -495,6 +495,9 @@ void Renderer::execute(FrameList& list){
     uint32_t passDraws[diag::PassCount]{},passTriangles[diag::PassCount]{};
     bool courseDrawn=false;
 #ifndef MKW_RELEASE
+    diag::costFrameBegin(tally); // DIAG track-cost.txt: every CostPeriod-th counted frame
+#endif
+#ifndef MKW_RELEASE
     auto& trace=diag::renderTrace;const unsigned traceSlot=list.frame%3;
     trace.counts[traceSlot]=0;trace.frames[traceSlot]=list.frame;trace.listFrame.store(list.frame,std::memory_order_relaxed);trace.cmdIndex.store(0,std::memory_order_relaxed);
 #endif
@@ -574,8 +577,13 @@ void Renderer::execute(FrameList& list){
             const bool courseTimed=pass==0&&diagRegion==diag::PassCourse;
             const auto drawStart=courseTimed?(chainedStart?chainedStart:svcGetSystemTick()):0;
 #endif
+#ifndef MKW_RELEASE
+            const uint32_t costCulled=stats_.culledTriangles;
+            if(pass==0)diag::costDrawBegin(bottom?uint8_t(diag::PassBottom):diagRegion,c.model);
+#endif
             drawNow(*c.model,c.vertices,c.transform,c.backdrop,c.material,c.context,c.visible);
 #ifndef MKW_RELEASE
+            diag::costDrawEnd(stats_.drawCalls-drawsBefore,stats_.triangles-trianglesBefore,stats_.culledTriangles-costCulled);
             if(courseTimed){const auto drawEnd=svcGetSystemTick();courseDrawTicks+=drawEnd-drawStart;courseDrawn=true;courseChain=drawEnd;}
 #endif
             execBehind_=false;execGhostPass_=0;
@@ -696,6 +704,9 @@ void Renderer::execute(FrameList& list){
             // Non-model draws (sprites, text, fades) go in one (non-model) row per pass.
             if(tally)diag::drawCount(model,at,stats_.drawCalls-drawsBefore,stats_.triangles-trianglesBefore,stats_.pixels-pixelsBefore);
             if(grid)diag::gridCount(model,at,stats_.drawCalls-drawsBefore,stats_.triangles-trianglesBefore,stats_.pixels-pixelsBefore);
+#ifndef MKW_RELEASE
+            if(tally&&h.type!=CmdDraw)diag::costOther(at,stats_.triangles-trianglesBefore);
+#endif
         }
 #ifndef MKW_RELEASE
         if(cmdHashActive_)cmdHashUpdate();
@@ -703,6 +714,9 @@ void Renderer::execute(FrameList& list){
     }
     }
     if(tally){diag::passCount(passDraws,passTriangles);diag::drawFrame();}
+#ifndef MKW_RELEASE
+    diag::costFrameEnd(passDraws,passTriangles);
+#endif
     if(courseDrawn)++courseDrawFrames;
     if(grid)diag::gridFrame();
     if(diag::textureUse)diag::textureFrame();
@@ -766,7 +780,10 @@ void Renderer::setFov(float degrees,float nearPlane,float farPlane){
     if(recording())command<ProjectionCommand>().projection=mainProjection_;
     else projection_=mainProjection_;
 }
-float Renderer::slider() const{return sliderOverride_>=0?sliderOverride_:osGet3DSliderState();}
+float Renderer::slider() const{
+    if(sliderCycle>0)return (osGetTime()/u64(sliderCycle*1000.f))&1?.6f:0.f;
+    return sliderOverride_>=0?sliderOverride_:osGet3DSliderState();
+}
 float Renderer::sampleSlider(){
     const float value=slider();
     sliderOn_=value>(sliderOn_?SliderOff:SliderOn);
@@ -777,13 +794,18 @@ float Renderer::sampleSlider(){
 // whole scene: the subject's depth, set per frame, times the scene's ratio.
 void Renderer::beginStereo(float targetDistance){
     frameStereo_={};frameSlider_=0;cullProjection_=mainProjection_;
-    // 800px Mode: every frame is 800px and the 3D slider is ignored.
-    frameWide_=wideTarget_&&wideSetting;
+    // 800px Mode: frames are 800px while the 3D slider is down; with the slider up they are
+    // 3D at 400px per eye. sampleSlider's on/off thresholds keep a slider resting near the
+    // bottom from flipping between the two. The switch waits for the previous frame
+    // (Renderer::beginFrame's display-mode change). Bloom set up for 800px (bloomWide_)
+    // skips the 3D frames; the CRT look draws in each eye. A New 2DS XL has no right eye:
+    // always 800px. sliderOverrides800 false: 800px ignores the slider.
+    const float slider=targetRight_&&(sliderOverrides800||!(wideTarget_&&wideSetting))?sampleSlider():0.f;
+    frameWide_=wideTarget_&&wideSetting&&!(slider>0);
     const stereo::Scene scene=stereoSubjectSet_?stereoScene_:stereo::Race;
     const float subject=stereoSubjectSet_?stereoSubject_:targetDistance;
     stereoSubjectSet_=false;
     if(!targetRight_||frameWide_)return;
-    const float slider=sampleSlider();
     if(!(slider>0))return;
     frameSlider_=std::min(slider,1.f);
     frameStereo_=stereo::frame(slider,stereoDisplay_,scene,subject);

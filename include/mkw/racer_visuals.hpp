@@ -46,6 +46,9 @@ public:
     // Replayed ghosts (RaceConfig Ghost players) are left out of draw(): call
     // after the opaque world, player and its shadow. Translucent, no shadow volume.
     void drawGhosts(Renderer& renderer);
+    // Watch replay focus (as Retro Rewind's EnhancedReplay.cpp ChangeGhostOpacity): this player
+    // (1-11) draws opaque with its shadow volume though a ghost; 0 none. Per race.
+    void setFocus(unsigned player);
     unsigned count() const;
     // QA: opponents drawn with the Wii's low-detail driver in the last draw().
     unsigned lowDriverCount() const;

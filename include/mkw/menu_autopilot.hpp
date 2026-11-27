@@ -57,6 +57,11 @@ public:
  bool active()const{return active_;}
  // QA: player 0 is driven by the CPU route during an auto:N token.
  bool routeDrive()const{return active_&&!done_&&racing_&&route_;}
+ // The end-of-race menu's Quit slot for "quit" (main sets it: 4 on the Time Trial end menu).
+ unsigned quitSlot=1;
+ // The current token waits for the end-of-race menu (next, quit, pick:N): the Time Trial
+ // splits page is passed with A for it.
+ bool endToken()const{if(!active_||done_||cursor_>=tokens_.size())return false;const auto& t=tokens_[cursor_];return t=="next"||t=="quit"||!t.compare(0,5,"pick:");}
  bool finished()const{return done_;}
  bool passed()const{return done_&&!failed_;}
  unsigned racesStarted()const{return races_;}
@@ -90,7 +95,7 @@ public:
   switch((*token)[0]){
   case 'A':key.accept=true;break;case 'B':key.back=true;break;case 'U':key.up=true;break;
   case 'D':key.down=true;break;case 'L':key.left=true;break;case 'R':key.right=true;break;
-  case 'S':key.start=true;break;case 'Y':key.switchType=true;break;
+  case 'S':key.start=true;break;case 'Y':key.switchType=true;break;case 'X':key.mark=true;break;
   default:fail("unknown token");return key;
   }
   ++cursor_;return key;
@@ -147,11 +152,21 @@ public:
   if(*token=="skip"){++cursor_;return;}
   if(*token=="S"){down=KEY_START;++cursor_;return;}
   if(*token=="A"){if(++gap_>=8){gap_=0;down=KEY_A;++cursor_;}return;}
+  if(*token=="B"){if(++gap_>=8){gap_=0;down=KEY_B;++cursor_;}return;} // a watch replay: the previous ghost
   if((*token)[0]=='w'){if(++wait_>=unsigned(std::atoi(token->c_str()+1))){wait_=0;++cursor_;}return;}
+  // pick:N: button N of the end-of-race menu (Time Trial end: 0 Retry, 1 Change Course,
+  // 2 Change Character, 3 View Replay, 4 Quit Game).
+  if(!token->compare(0,5,"pick:")){
+   const unsigned wanted=unsigned(std::atoi(token->c_str()+5));
+   if(!endMenu){if(++raceWait_>12000)fail("end-of-race menu did not appear");return;}
+   raceWait_=0;if(++gap_<8)return;gap_=0;
+   if(endCursor!=wanted){down=KEY_DDOWN;return;}
+   down=KEY_A;++cursor_;leaving_=true;return;
+  }
   if(*token=="next"||*token=="quit"){
    if(!endMenu){if(++raceWait_>12000)fail("end-of-race menu did not appear");return;}
    raceWait_=0;if(++gap_<8)return;gap_=0;
-   const unsigned wanted=*token=="quit"?1:0;
+   const unsigned wanted=*token=="quit"?quitSlot:0;
    if(endCursor!=wanted){down=KEY_DDOWN;return;}
    down=KEY_A;++cursor_;leaving_=true;
    // A resumed benchmark's set is shorter than the script: after its final

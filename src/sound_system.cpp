@@ -10,8 +10,10 @@
 #include <mkw/menu_movie_audio.hpp>
 #include <mkw/snd_layout.hpp>
 #include <mkw/snd_short_loop.hpp>
+#include <mkw/snd_3d.hpp>
 #include <3ds.h>
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -523,7 +525,11 @@ public:
  void pause(int v, bool p) override { if (!ch[v].reserved) { ch[v].paused = p; if (!ch[v].pendingStart) ndspChnSetPaused(v, p); } }
  void set(int v, f32 rate, const Gains& g, f32 lpfHz) override {
   Chan& c = ch[v]; if (c.reserved || c.mode == Chan::Idle) return;
-  if (rate != c.rate) { ndspChnSetRate(v, std::clamp(rate, 1.0f, 192000.0f)); c.rate = rate; }
+  // A non-finite rate (a NaN doppler pitch) keeps the last one: clamp passes NaN through.
+#ifndef MKW_RELEASE
+  { static bool told = false; if (!std::isfinite(rate) && !told) { told = true; if (FILE* f = std::fopen("sdmc:/3ds/MKWiiDS/runtime.log", "a")) { std::fprintf(f, "sound: non-finite rate on voice %d\n", v); std::fclose(f); } } }
+#endif
+  if (rate != c.rate && (std::isfinite(rate) || !snd::nonFiniteGuard)) { ndspChnSetRate(v, std::clamp(rate, 1.0f, 192000.0f)); c.rate = rate; }
   // NDSP main bus: front left, front right, back left, back right.
   if (g.left != c.gain.left || g.right != c.gain.right || g.rearLeft != c.gain.rearLeft || g.rearRight != c.gain.rearRight) {
    float mix[12] = {}; mix[0] = g.left; mix[1] = g.right; mix[2] = g.rearLeft; mix[3] = g.rearRight; ndspChnSetMix(v, mix); c.gain = g;
@@ -579,9 +585,14 @@ struct WaveRamCache {
  struct Range { std::unique_ptr<u8[]> data; u32 size = 0, used = 0; };
  LightLock lock; std::map<u32, Range> ranges; size_t bytes = 0, limit = 0; u32 clock = 0;
  SoundSystem::RamCacheStats stats{};
+ // The thread holding lock (its TLS address): release() runs from an allocation
+ // failure on any thread (mkw/heap_guard.hpp) and must not wait on its own lock.
+ void* volatile owner = nullptr; bool pressure = false;
+ void lockOwned() { LightLock_Lock(&lock); owner = getThreadLocalStorage(); }
+ void unlockOwned() { owner = nullptr; LightLock_Unlock(&lock); }
  WaveRamCache() { LightLock_Init(&lock); }
  bool read(void* dst, u32 offset, u32 size) {
-  LightLock_Lock(&lock);
+  lockOwned();
   bool hit = false;
   auto it = ranges.upper_bound(offset);
   if (limit && it != ranges.begin()) {
@@ -593,15 +604,16 @@ struct WaveRamCache {
    }
   }
   if (!hit) { ++stats.misses; stats.missBytes += size; }
-  LightLock_Unlock(&lock);
+  unlockOwned();
   return hit;
  }
  void keep(const void* src, u32 offset, u32 size) {
-  LightLock_Lock(&lock);
+  lockOwned();
   // A longer read at a kept offset (a wave's whole RWAV header after its first
   // 0x20 bytes) replaces the shorter range.
   if (auto same = ranges.find(offset); same != ranges.end() && same->second.size < size) { bytes -= same->second.size; ranges.erase(same); }
-  if (limit && size && size <= limit && !ranges.count(offset)) {
+  if (pressure) ++stats.heapLow;
+  else if (limit && size && size <= limit && !ranges.count(offset)) {
    while (bytes + size > limit && !ranges.empty()) {
     auto oldest = ranges.begin();
     for (auto it = ranges.begin(); it != ranges.end(); ++it) if (it->second.used < oldest->second.used) oldest = it;
@@ -614,16 +626,25 @@ struct WaveRamCache {
     if (r.data) { std::memcpy(r.data.get(), src, size); r.size = size; r.used = ++clock; ranges.emplace(offset, std::move(r)); bytes += size; }
    } else ++stats.heapLow;
   }
-  LightLock_Unlock(&lock);
+  unlockOwned();
  }
  void configure(size_t newLimit) {
-  LightLock_Lock(&lock);
+  lockOwned();
   limit = newLimit;
   if (!limit) { ranges.clear(); bytes = 0; }
-  LightLock_Unlock(&lock);
+  unlockOwned();
  }
- void clear() { LightLock_Lock(&lock); ranges.clear(); bytes = 0; LightLock_Unlock(&lock); }
- bool on() { LightLock_Lock(&lock); const bool o = limit != 0; LightLock_Unlock(&lock); return o; }
+ void clear() { lockOwned(); ranges.clear(); bytes = 0; pressure = false; unlockOwned(); }
+ // After a failed allocation: every kept range goes, and nothing is kept until clear()/configure().
+ size_t release() {
+  const bool mine = owner == getThreadLocalStorage();
+  if (!mine) lockOwned();
+  const size_t freed = bytes; ranges.clear(); bytes = 0; pressure = true;
+  if (!mine) unlockOwned();
+  return freed;
+ }
+ void relax() { lockOwned(); pressure = false; unlockOwned(); }
+ bool on() { lockOwned(); const bool o = limit != 0; unlockOwned(); return o; }
 };
 WaveRamCache& waveRamCache() { static WaveRamCache c; return c; }
 }
@@ -1328,6 +1349,8 @@ int SoundSystem::reserveChannel() {
 void SoundSystem::releaseChannel(int channel) { if (impl_ && channel >= 0) { impl_->releaseRequest.store(channel); impl_->reservedChannel.store(-1); } }
 void SoundSystem::setRamCache(std::size_t limit) { waveRamCache().configure(limit); }
 void SoundSystem::dropRamCache() { waveRamCache().clear(); }
+std::size_t SoundSystem::releaseRamCache() { return waveRamCache().release(); }
+void SoundSystem::relaxRamCache() { waveRamCache().relax(); }
 SoundSystem::RamCacheStats SoundSystem::ramCacheStats() {
  auto& c = waveRamCache(); LightLock_Lock(&c.lock); RamCacheStats out = c.stats; out.bytes = c.bytes; LightLock_Unlock(&c.lock); return out;
 }

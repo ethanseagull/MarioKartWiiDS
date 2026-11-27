@@ -9,6 +9,8 @@
 #include "mkw/sim_profile.hpp"
 #include "mkw/diag.hpp"
 #include "mkw/vertex_cache_order.hpp"
+#include "mkw/fine_cull.hpp"
+#include <mkw/loading_screen.hpp>
 #include <mkw/normal_matrix.hpp>
 #include "mkw/castle_regions.hpp"
 #include "mkw/stadium_screen.hpp"
@@ -298,10 +300,25 @@ bool listLoaded(Texture& t,const char* path,bool loaded){
 }
 }
 bool Texture::load(const char* path,int halveLarge) {
+#ifndef MKW_RELEASE
+    // DIAG track-cost.txt: a file that did not load, or (import) whose texture could not be created.
+    bool read=false;
+    const bool ok=listLoaded(*this,path,withTextureFile(path,[&](const uint8_t* data,size_t size){read=true;return loadMemory(data,size,false,halveLarge);}));
+    if(!ok)diag::costTextureFailed(path,read);
+    return ok;
+#else
     return listLoaded(*this,path,withTextureFile(path,[&](const uint8_t* data,size_t size){return loadMemory(data,size,false,halveLarge);}));
+#endif
 }
 bool Texture::loadVram(const char* path) {
+#ifndef MKW_RELEASE
+    bool read=false;
+    const bool ok=listLoaded(*this,path,withTextureFile(path,[&](const uint8_t* data,size_t size){read=true;return loadMemory(data,size,true);}));
+    if(!ok)diag::costTextureFailed(path,read);
+    return ok;
+#else
     return listLoaded(*this,path,withTextureFile(path,[&](const uint8_t* data,size_t size){return loadMemory(data,size,true);}));
+#endif
 }
 bool Texture::loadMemory(const void* data,size_t size,bool vram,int halveLarge) {
     reset();
@@ -413,6 +430,13 @@ void Model::enableStaticCulling(bool contact){
             flushGpuData(contactIndices,indexCount*sizeof(uint16_t));
         }
     }
+    // Fine culling (mkw/fine_cull.hpp): children of the blocks drawn in the
+    // authored order (submeshes whose order shows) and, until enableCacheOrder
+    // reorders them, of the spatial blocks.
+    if(contact&&fineCull::build){
+        for(size_t i=0;i<visibility.size()&&i<submeshes.size();++i)if(!cacheorder::orderSafe(submeshes[i].flags))buildChildren(vertices,indices,visibility[i],fineCull::ChildTriangles);
+        if(contactIndices)for(size_t i=0;i<contactCoarseVisibility.size()&&i<submeshes.size();++i)if(cacheorder::orderSafe(submeshes[i].flags))buildChildren(vertices,contactIndices,contactCoarseVisibility[i],fineCull::ChildTriangles);
+    }
 }
 // Triangle order can't show: unblended, depth-tested and depth-written (the
 // depth state drawNow derives from the same flags).
@@ -453,7 +477,180 @@ Model::CacheOrderStats Model::enableCacheOrder(bool install,const char* cooked){
         const uint32_t used=cacheorder::reorderBlocks(regionIndices[z],flags.data(),flags.size(),regionVisibility[z],block);
         if(used)flushGpuData(regionIndices[z],used*sizeof(uint16_t));
     }
+    // Fine culling: the children follow the order each block is drawn in.
+    if(fineCull::build){
+        if(const uint16_t* drawn=cacheIndices?cacheIndices:contactIndices)
+            for(size_t i=0;i<contactCoarseVisibility.size()&&i<submeshes.size();++i)if(cacheorder::orderSafe(submeshes[i].flags))buildChildren(vertices,drawn,contactCoarseVisibility[i],fineCull::ChildTriangles);
+        for(unsigned z=0;z<2;++z)if(regionIndices[z]&&regionVisibility[z].size()==submeshes.size())
+            for(auto& v:regionVisibility[z])buildChildren(vertices,regionIndices[z],v,fineCull::ChildTriangles);
+    }
     stats.indices=block.indices;stats.before=block.before;stats.after=block.after;stats.kept=block.kept;
+    return stats;
+}
+// A submesh qualifies when the draw reads its baked vertex colour and no
+// normal: unlit GX channel, or lighting baked (and never rebaked from a
+// kept bake source); no EnvCamera, light texture or menu reflection mode.
+bool Model::submeshNormalFree(const Submesh& s) const{
+    const unsigned channel=(s.lighting&retail::ChannelMask)>>retail::ChannelShift;
+    if(channel&&!((s.lighting&retail::StaticLighting)&&!bakeSource))return false;
+    if(s.lighting&(retail::FixedEnvironment|retail::PrimaryEnvironment))return false;
+    if(s.menuReflection||normalEnvironment(s.lighting,s.menuReflection,s.reflectionConstant))return false;
+    return !((s.flags&(1u<<25))&&((s.flags>>12)&3)==3);
+}
+Model::PackStats Model::packCourse(bool compact,bool dropNormals,const float* grid,bool perSubmesh){
+    PackStats stats;stats.before=stats.after=stats.kept=vertexCount;stats.format=vertexFormat;stats.bytes=vertexCount*vertexStride(vertexFormat);
+    if(!vertices||!indices||!vertexCount||vertexCount>65536||vertexFormat!=VertexFormat::Full||skinBoneIndices||staticEnvironment2||bakeSource||!staticLightingBaked)return stats;
+    bool normalFree=dropNormals&&!submeshes.empty();
+    for(const auto& s:submeshes)if(normalFree&&!submeshNormalFree(s))normalFree=false;
+    const VertexFormat format=normalFree?(grid?VertexFormat::ShortPosition:VertexFormat::NoNormal):VertexFormat::Full;
+    // Every index list the draws use: authored, contact, cache order, castle regions (their used part).
+    uint32_t regionUsed[2]{};
+    for(unsigned z=0;z<2;++z)if(regionIndices[z])for(const auto& v:regionVisibility[z])for(const auto& b:v.blocks)regionUsed[z]=std::max(regionUsed[z],b.indices.first+b.indices.count);
+    auto lists=[&](auto&& fn){fn(indices,indexCount);if(contactIndices)fn(contactIndices,indexCount);if(cacheIndices)fn(cacheIndices,indexCount);
+        for(unsigned z=0;z<2;++z)if(regionIndices[z])fn(regionIndices[z],regionUsed[z]);};
+    // A part with lit and normal-free submeshes, per submesh: GMDL records for
+    // the vertices lit submeshes draw, then NoNormal records for those the
+    // others draw (and, without compact, every vertex). False leaves the part
+    // untouched for the per-part path below (whole part full).
+    auto split=[&]()->bool{
+        const size_t n=submeshes.size();
+        std::vector<uint8_t> lit(n,0);unsigned litDrawn=0,freeDrawn=0;
+        for(size_t k=0;k<n;++k){lit[k]=!submeshNormalFree(submeshes[k]);if(submeshes[k].count)++(lit[k]?litDrawn:freeDrawn);}
+        if(!litDrawn||!freeDrawn)return false;
+        // Each list position's kind: 1 a lit submesh draws it, 0 a normal-free
+        // one or none (never drawn). Submesh ranges: authored, contact and
+        // cache lists (the latter two reorder within them); castle regions:
+        // the submesh's blocks. A position both kinds draw: no split.
+        struct List {uint16_t* list;uint32_t count;int region;};
+        std::vector<List> all;all.push_back({indices,indexCount,-1});
+        if(contactIndices)all.push_back({contactIndices,indexCount,-1});
+        if(cacheIndices)all.push_back({cacheIndices,indexCount,-1});
+        for(unsigned z=0;z<2;++z)if(regionIndices[z]){if(regionVisibility[z].size()!=n)return false;all.push_back({regionIndices[z],regionUsed[z],int(z)});}
+        std::vector<std::vector<uint8_t>> kind(all.size());
+        for(size_t l=0;l<all.size();++l){
+            auto& o=kind[l];o.assign(all[l].count,0xff);
+            auto mark=[&](uint32_t first,uint32_t count,uint8_t value){
+                if(first>o.size()||count>o.size()-first)return false;
+                for(uint32_t j=first;j<first+count;++j){if(o[j]!=0xff&&o[j]!=value)return false;o[j]=value;}
+                return true;
+            };
+            for(size_t k=0;k<n;++k){
+                if(all[l].region<0){if(!mark(submeshes[k].first,submeshes[k].count,lit[k]))return false;}
+                else for(const auto& b:regionVisibility[all[l].region][k].blocks)if(!mark(b.indices.first,b.indices.count,lit[k]))return false;
+            }
+            for(auto& v:o)if(v==0xff)v=0;
+        }
+        // Lit use from the authored list; another list's lit position on a
+        // vertex no authored lit triangle draws would mean a reorder across
+        // submeshes: no split.
+        std::vector<uint8_t> fullUse(vertexCount,0),freeUse(vertexCount,compact?0:1);
+        for(uint32_t j=0;j<indexCount;++j)if(kind[0][j])fullUse[indices[j]]=1;
+        for(size_t l=0;l<all.size();++l)for(uint32_t j=0;j<all[l].count;++j){const uint16_t v=all[l].list[j];
+            if(!kind[l][j])freeUse[v]=1;else if(!fullUse[v])return false;}
+        uint32_t full=0,rest=0,shared=0,distinct=0;
+        for(uint32_t v=0;v<vertexCount;++v){full+=fullUse[v];rest+=freeUse[v];shared+=fullUse[v]&freeUse[v];distinct+=fullUse[v]|freeUse[v];}
+        const size_t bytes=size_t(full)*sizeof(Vertex)+size_t(rest)*sizeof(NoNormalVertex);
+        if(size_t(full)+rest>65536||bytes>=size_t(distinct)*sizeof(Vertex))return false;
+        auto* fullAt=new(std::nothrow) uint16_t[vertexCount];auto* freeAt=new(std::nothrow) uint16_t[vertexCount];
+        auto* out=fullAt&&freeAt?static_cast<uint8_t*>(linearAlloc(bytes)):nullptr;
+        if(!out){delete[] fullAt;delete[] freeAt;return false;}
+        // New numbers in the old order: the GMDL records 0..full-1, then the
+        // NoNormal ones full..full+rest-1 at out + full*12 + number*32.
+        {uint32_t a=0,b=full;for(uint32_t v=0;v<vertexCount;++v){if(fullUse[v])fullAt[v]=uint16_t(a++);if(freeUse[v])freeAt[v]=uint16_t(b++);}}
+        uint8_t* const rests=out+size_t(full)*(sizeof(Vertex)-sizeof(NoNormalVertex));
+        for(uint32_t v=0;v<vertexCount;++v){
+            const Vertex& in=vertices[v];
+            if(fullUse[v])std::memcpy(out+size_t(fullAt[v])*sizeof(Vertex),&in,sizeof in);
+            if(freeUse[v]){NoNormalVertex r;r.position=in.position;std::memcpy(r.uv,in.uv,8);std::memcpy(r.uv1,in.uv1,8);std::memcpy(r.color,in.color,4);
+                std::memcpy(rests+size_t(freeAt[v])*sizeof(NoNormalVertex),&r,sizeof r);}
+        }
+        flushGpuData(out,uint32_t(bytes));
+        for(size_t l=0;l<all.size();++l){uint16_t* list=all[l].list;const auto& o=kind[l];
+            for(uint32_t j=0;j<all[l].count;++j)list[j]=o[j]?fullAt[list[j]]:freeAt[list[j]];
+            flushGpuData(list,all[l].count*sizeof(uint16_t));}
+        delete[] fullAt;delete[] freeAt;
+        linearFree(vertices);vertices=reinterpret_cast<Vertex*>(out);vertexCount=full+rest;vertexFormat=VertexFormat::NoNormal;
+        fullVertices=full;fullSubmesh=std::move(lit);
+        stats.after=full+rest;stats.kept=distinct;stats.full=full;stats.shared=shared;stats.bytes=uint32_t(bytes);stats.litSubmeshes=litDrawn;
+        stats.format=VertexFormat::NoNormal;stats.done=true;
+        return true;
+    };
+    if(format==VertexFormat::Full&&dropNormals&&perSubmesh&&split())return stats;
+    std::vector<uint8_t> used;
+    auto* remap=new(std::nothrow) uint16_t[vertexCount];if(!remap)return stats;
+    uint32_t kept=0;
+    if(compact){
+        used.assign(vertexCount,0);
+        lists([&](const uint16_t* list,uint32_t count){for(uint32_t i=0;i<count;++i)used[list[i]]=1;});
+        // A used vertex's new number: the used vertices before it (order kept).
+        for(uint32_t v=0;v<vertexCount;++v){remap[v]=uint16_t(kept);kept+=used[v];}
+    }else{for(uint32_t v=0;v<vertexCount;++v)remap[v]=uint16_t(v);kept=vertexCount;}
+    if(kept==vertexCount&&format==VertexFormat::Full){delete[] remap;stats.done=true;return stats;}
+    if(!kept){delete[] remap;return stats;}
+    const unsigned stride=vertexStride(format);
+    auto* out=static_cast<uint8_t*>(linearAlloc(size_t(kept)*stride));
+    if(!out){delete[] remap;return stats;}
+    float scale[3]{1,1,1},offset[3]{};
+    if(format==VertexFormat::ShortPosition)for(unsigned k=0;k<3;++k){scale[k]=grid[k];offset[k]=grid[3+k];}
+    for(uint32_t v=0;v<vertexCount;++v){
+        if(compact&&!used[v])continue;
+        const Vertex& in=vertices[v];uint8_t* o=out+size_t(remap[v])*stride;
+        if(format==VertexFormat::Full)std::memcpy(o,&in,sizeof in);
+        else if(format==VertexFormat::NoNormal){NoNormalVertex r;r.position=in.position;std::memcpy(r.uv,in.uv,8);std::memcpy(r.uv1,in.uv1,8);std::memcpy(r.color,in.color,4);std::memcpy(o,&r,sizeof r);}
+        else{
+            ShortVertex r{};std::memcpy(r.uv,in.uv,8);std::memcpy(r.uv1,in.uv1,8);std::memcpy(r.color,in.color,4);
+            const float p[3]={in.position.x,in.position.y,in.position.z};
+            for(unsigned k=0;k<3;++k)r.position[k]=int16_t(std::clamp<long>(std::lround((p[k]-offset[k])/scale[k]),-32767L,32767L));
+            std::memcpy(o,&r,sizeof r);
+        }
+    }
+    flushGpuData(out,uint32_t(size_t(kept)*stride));
+    if(compact)lists([&](uint16_t* list,uint32_t count){for(uint32_t i=0;i<count;++i)list[i]=remap[list[i]];flushGpuData(list,count*sizeof(uint16_t));});
+    delete[] remap;
+    linearFree(vertices);vertices=reinterpret_cast<Vertex*>(out);vertexCount=kept;vertexFormat=format;
+    for(unsigned k=0;k<3;++k){positionScale[k]=scale[k];positionOffset[k]=offset[k];}
+    if(format==VertexFormat::ShortPosition){
+        // Quantized corners lie within half a step of the float ones the bounds came from.
+        const Vec3 h{.5f*scale[0],.5f*scale[1],.5f*scale[2]};
+        auto grow=[&](Bounds& b){b.minimum={b.minimum.x-h.x,b.minimum.y-h.y,b.minimum.z-h.z};b.maximum={b.maximum.x+h.x,b.maximum.y+h.y,b.maximum.z+h.z};};
+        auto growAll=[&](std::vector<SubmeshVisibility>& list){for(auto& v:list){grow(v.bounds);for(auto& b:v.blocks)grow(b.bounds);for(auto& c:v.children)grow(c);}};
+        growAll(visibility);growAll(contactVisibility);growAll(contactCoarseVisibility);growAll(regionVisibility[0]);growAll(regionVisibility[1]);
+        minimum={minimum.x-h.x,minimum.y-h.y,minimum.z-h.z};maximum={maximum.x+h.x,maximum.y+h.y,maximum.z+h.z};
+    }
+    stats.after=stats.kept=kept;stats.bytes=uint32_t(size_t(kept)*stride);stats.format=format;stats.done=true;
+    return stats;
+}
+courseWeld::Stats Model::weldCourse(){
+    courseWeld::Stats stats;
+    if(!indices||vertexCount<2||vertexCount>65536||skinBoneIndices||staticEnvironment2||!staticLightingBaked)return stats;
+    // Each vertex's one drawing submesh (0xffff none, 0xfffe several).
+    auto* user=new(std::nothrow) uint16_t[vertexCount];auto* remap=new(std::nothrow) uint16_t[vertexCount];
+    if(!user||!remap){delete[] user;delete[] remap;return stats;}
+    std::fill(user,user+vertexCount,uint16_t(0xffff));
+    auto qualifies=[&](const Submesh& s){return submeshNormalFree(s);};
+    for(size_t k=0;k<submeshes.size()&&k<0xfffe;++k){const auto& s=submeshes[k];
+        for(uint32_t j=s.first;j<s.first+s.count&&j<indexCount;++j){auto& u=user[indices[j]];u=u==0xffff||u==k?uint16_t(k):uint16_t(0xfffe);}}
+    std::vector<uint8_t> ok(submeshes.size(),0);for(size_t k=0;k<submeshes.size();++k)ok[k]=qualifies(submeshes[k]);
+    // Position, both UV pairs and colour: bytes 0-11 and 24-43 (the normal, 12-23, is not read).
+    const auto* bytes=reinterpret_cast<const uint8_t*>(vertices);
+    const bool made=courseWeld::weldRemap(vertexCount,remap,
+        [&](uint32_t v){return user[v]<0xfffe&&ok[user[v]];},
+        [&](uint32_t v){return user[v];},
+        [&](uint32_t v){const uint8_t* b=bytes+size_t(v)*sizeof(Vertex);uint32_t w[8];std::memcpy(w,b,12);std::memcpy(w+3,b+24,20);
+            uint32_t h=0x811c9dc5u;for(uint32_t x:w){h^=x;h*=0x01000193u;h^=h>>15;}return h;},
+        [&](uint32_t a,uint32_t b){const uint8_t* x=bytes+size_t(a)*sizeof(Vertex);const uint8_t* y=bytes+size_t(b)*sizeof(Vertex);
+            return !std::memcmp(x,y,12)&&!std::memcmp(x+24,y+24,20);},stats);
+    if(made&&stats.merged){
+        auto apply=[&](uint16_t* list,uint32_t count){if(!list)return;
+            for(uint32_t i=0;i<count;++i){const uint16_t r=remap[list[i]];if(r!=list[i]){list[i]=r;++stats.remapped;}}
+            flushGpuData(list,count*sizeof(uint16_t));};
+        apply(indices,indexCount);apply(contactIndices,indexCount);apply(cacheIndices,indexCount);
+        for(unsigned z=0;z<2;++z)if(regionIndices[z]){uint32_t used=0;
+            for(const auto& v:regionVisibility[z])for(const auto& b:v.blocks)used=std::max(used,b.indices.first+b.indices.count);
+            apply(regionIndices[z],used);}
+    }
+    stats.done=made;
+    delete[] user;delete[] remap;
     return stats;
 }
 bool Model::enableCastleRegions(bool spatial){
@@ -485,6 +682,7 @@ bool Model::enableCastleRegions(bool spatial){
         }
         std::memcpy(regionIndices[z],packed.data(),packed.size()*sizeof(uint16_t));
         flushGpuData(regionIndices[z],packed.size()*sizeof(uint16_t));
+        if(fineCull::build)for(auto& v:regionVisibility[z])buildChildren(vertices,regionIndices[z],v,fineCull::ChildTriangles);
     }
     return true;
 }
@@ -850,6 +1048,19 @@ void Renderer::readSwitches(){
     quadMerge=!exists("sdmc:/3ds/MKWiiDS/no-quad-merge.txt");
     volumeRects=!exists("sdmc:/3ds/MKWiiDS/no-volume-rects.txt");
     DeferredWrites::directWrites=!exists("sdmc:/3ds/MKWiiDS/no-skin-direct.txt");
+    // Finer course culling (mkw/fine_cull.hpp); off: the 128-triangle blocks as before.
+    // Old 3DS: off (its CPU cost there is unmeasured; DIAG o3ds-fine-cull.txt turns it on).
+    fineCull::on=!exists("sdmc:/3ds/MKWiiDS/no-fine-cull.txt");
+#ifndef MKW_RELEASE
+    if(!mkw::isNew3ds()&&!exists("sdmc:/3ds/MKWiiDS/o3ds-fine-cull.txt"))fineCull::on=false;
+    fineCull::alternate=exists("sdmc:/3ds/MKWiiDS/fine-cull-alternate.txt");
+    if(fineCull::alternate)fineCull::on=true;
+    fineCull::countVertices=exists("sdmc:/3ds/MKWiiDS/cull-vertex-count.txt");
+    fineCull::verify=exists("sdmc:/3ds/MKWiiDS/fine-cull-verify.txt");
+#else
+    if(!mkw::isNew3ds())fineCull::on=false;
+#endif
+    fineCull::build=fineCull::on||fineCull::alternate;
 #ifndef MKW_RELEASE
     Texture::mipCapOn=!exists("sdmc:/3ds/MKWiiDS/no-mip-cap.txt");
     Texture::objectMipCap=!exists("sdmc:/3ds/MKWiiDS/no-object-mip-cap.txt");
@@ -943,6 +1154,7 @@ bool Renderer::init(){
     effectVertices_=linearAlloc(kEffectVertices*sizeof(ef::DrawVertex));if(!effectVertices_)return fail();
     // Without room the shells are drawn whole, as with no-box-precull.txt.
     if(facingCull)facingIndices_=static_cast<uint16_t*>(linearAlloc(kFacingIndices*sizeof(uint16_t)));
+    if(courseFacing)courseFacingIndices_=static_cast<uint16_t*>(linearAlloc(kCourseFacingIndices*sizeof(uint16_t)));
     if(shader_->numDVLE<3)return fail();
     shaderProgramInit(&miiProgram_);miiProgramReady_=true;
     if(R_FAILED(shaderProgramSetVsh(&miiProgram_,&shader_->DVLE[2])))return fail();
@@ -1033,8 +1245,9 @@ void Renderer::releaseBottom(){
     C3D_RenderTargetDelete(bottomTarget_);bottomTarget_=nullptr;
     presentedBottom_=nullptr;
     // The lower LCD shows its last transferred frame until something replaces
-    // it: blank both BGR8 buffers when releasing lower-screen rendering.
-    for(unsigned i=0;i<2;++i){
+    // it: blank both BGR8 buffers when releasing lower-screen rendering (the
+    // race loading screen, drawing them now, blanks them when it closes).
+    for(unsigned i=0;i<2&&!loadingScreenOwnsBottom();++i){
         u16 w=0,h=0;u8* framebuffer=gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,&w,&h);
         if(framebuffer){std::memset(framebuffer,0,size_t(w)*h*3);GSPGPU_FlushDataCache(framebuffer,u32(w)*h*3);}
         gfxScreenSwapBuffers(GFX_BOTTOM,false);
@@ -1219,6 +1432,7 @@ bool Renderer::allocateFrameBuffers(){
     // Optional: without it facingCull stays off (a pipelined frame would
     // overwrite lists the GPU may still read).
     if(facingIndices_&&!(facingIndicesAlt_=static_cast<uint16_t*>(linearAlloc(kFacingIndices*sizeof(uint16_t))))){linearFree(facingIndices_);facingIndices_=nullptr;}
+    if(courseFacingIndices_&&!(courseFacingIndicesAlt_=static_cast<uint16_t*>(linearAlloc(kCourseFacingIndices*sizeof(uint16_t))))){linearFree(courseFacingIndices_);courseFacingIndices_=nullptr;}
     if(!C3D_TexInit(&effectLookupAlt_,ef::DrawList::LookupSize,ef::DrawList::LookupSize,GPU_RGBA8))return false;
     C3D_TexSetFilter(&effectLookupAlt_,GPU_NEAREST,GPU_NEAREST);C3D_TexSetWrap(&effectLookupAlt_,GPU_CLAMP_TO_EDGE,GPU_CLAMP_TO_EDGE);
     return true;
@@ -1227,6 +1441,7 @@ void Renderer::freeFrameBuffers(){
     for(Vertex** buffer:{&overlayAlt_,&spritesAlt_,&textAlt_,&particlesAlt_}){linearFree(*buffer);*buffer=nullptr;}
     linearFree(effectVerticesAlt_);effectVerticesAlt_=nullptr;
     linearFree(facingIndicesAlt_);facingIndicesAlt_=nullptr;
+    linearFree(courseFacingIndicesAlt_);courseFacingIndicesAlt_=nullptr;
     if(effectLookupAlt_.data)C3D_TexDelete(&effectLookupAlt_);
     effectLookupAlt_={};
 }
@@ -1235,7 +1450,7 @@ void Renderer::freeFrameBuffers(){
 void Renderer::swapFrameBuffers(){
     std::swap(overlay_,overlayAlt_);std::swap(sprites_,spritesAlt_);std::swap(text_,textAlt_);std::swap(particles_,particlesAlt_);
     std::swap(effectVertices_,effectVerticesAlt_);std::swap(effectLookup_,effectLookupAlt_);
-    std::swap(facingIndices_,facingIndicesAlt_);
+    std::swap(facingIndices_,facingIndicesAlt_);std::swap(courseFacingIndices_,courseFacingIndicesAlt_);
     if(retailTextureAlt_[0].data)for(unsigned which=0;which<2;++which){
         std::swap(retailTexture_[which],retailTextureAlt_[which]);std::swap(retailTextureCurrent_[which],retailTextureAltCurrent_[which]);
     }
@@ -1274,6 +1489,7 @@ void Renderer::shutdown(){
     linearFree(sprites_);sprites_=nullptr;linearFree(overlay_);overlay_=nullptr;
     linearFree(text_);text_=nullptr;
     linearFree(facingIndices_);facingIndices_=nullptr;
+    linearFree(courseFacingIndices_);courseFacingIndices_=nullptr;
     freeFrameBuffers();
     retailShutdown();
     if(white_.data)C3D_TexDelete(&white_);
@@ -1346,6 +1562,7 @@ void Renderer::beginNow(const C3D_Mtx& view,const C3D_Mtx& projection,bool sync,
     eye_=0;
     // The GPU reads nothing of this buffer's last frame any more (see swapFrameBuffers).
     facingUsed_=facingFlushed_=0;for(auto& l:facingLists_)l.model=nullptr;
+    courseFacingUsed_=courseFacingFlushed_=0;
     shadowRingUsed_=0;
     // Dad's capture cadence: one sample per two rendered frames, independently
     // of simulation ticks, eye replays and the lower-screen intro pass.
@@ -1701,13 +1918,13 @@ void Renderer::resetMaterialUniforms(){
 namespace {
 // DIAG (diag::modelPixels): screen pixels covered by indexed triangles, each
 // clipped in PICA clip space (x,y in [-w,w], z in [-w,0]).
-uint64_t trianglePixels(const C3D_Mtx& clip,const Vertex* vertices,const uint16_t* indices,unsigned count,float width){
+uint64_t trianglePixels(const C3D_Mtx& clip,const VertexPositions& vertices,const uint16_t* indices,unsigned count,float width){
     struct P {float x,y,z,w;};
     double area=0;
     for(unsigned t=0;t+2<count;t+=3){
         P poly[9],next[9];unsigned n=3;
         for(unsigned k=0;k<3;++k){
-            const Vec3 p=vertices[indices[t+k]].position;
+            const Vec3 p=vertices[indices[t+k]];
             const C3D_FVec c=Mtx_MultiplyFVec4(&clip,FVec4_New(p.x,p.y,p.z,1));poly[k]={c.x,c.y,c.z,c.w};
         }
         auto distance=[](const P& p,unsigned plane){
@@ -1731,6 +1948,61 @@ uint64_t trianglePixels(const C3D_Mtx& clip,const Vertex* vertices,const uint16_
     }
     return uint64_t(area*width*240.0/4.0);
 }
+#ifndef MKW_RELEASE
+// DIAG track-cost.txt (diag::costTally.draw): vertex-shader runs of an index
+// list through a 16-entry FIFO post-vertex cache (measured on the console: ~16 entries).
+void costVertexRuns(const uint16_t* indices,unsigned count){
+    auto& d=diag::costTally.draw;uint16_t fifo[16];unsigned head=0,filled=0;
+    for(unsigned i=0;i<count;++i){
+        const uint16_t v=indices[i];bool hit=false;
+        for(unsigned k=0;k<filled;++k)if(fifo[k]==v){hit=true;break;}
+        if(!hit){++d.vs;fifo[head]=v;head=(head+1)&15u;if(filled<16)++filled;}
+    }
+}
+// Each triangle by view depth (mean clip w of its corners) and screen area
+// clipped as in trianglePixels (0 when nothing is left on screen).
+void costTriangles(const C3D_Mtx& clip,const VertexPositions& vertices,const uint16_t* indices,unsigned count,float width){
+    auto& d=diag::costTally.draw;costVertexRuns(indices,count);
+    struct P {float x,y,z,w;};
+    for(unsigned t=0;t+2<count;t+=3){
+        P poly[9],next[9];unsigned n=3;float wsum=0;
+        for(unsigned k=0;k<3;++k){
+            const Vec3 p=vertices[indices[t+k]];
+            const C3D_FVec c=Mtx_MultiplyFVec4(&clip,FVec4_New(p.x,p.y,p.z,1));poly[k]={c.x,c.y,c.z,c.w};wsum+=c.w;
+        }
+        const float depth=wsum/3.f;
+        auto distance=[](const P& p,unsigned plane){
+            switch(plane){case 0:return p.w+p.x;case 1:return p.w-p.x;case 2:return p.w+p.y;case 3:return p.w-p.y;case 4:return p.w+p.z;default:return -p.z;}
+        };
+        for(unsigned plane=0;plane<6&&n>=3;++plane){
+            unsigned m=0;
+            for(unsigned i=0;i<n;++i){
+                const P& a=poly[i];const P& b=poly[(i+1)%n];const float da=distance(a,plane),db=distance(b,plane);
+                if(da>=0&&m<9)next[m++]=a;
+                if((da>=0)!=(db>=0)&&m<9){const float s=da/(da-db);next[m++]={a.x+(b.x-a.x)*s,a.y+(b.y-a.y)*s,a.z+(b.z-a.z)*s,a.w+(b.w-a.w)*s};}
+            }
+            n=m;std::copy(next,next+m,poly);
+        }
+        unsigned area=0;
+        if(n>=3){
+            double twice=0;
+            for(unsigned i=0;i<n;++i){const P& a=poly[i];const P& b=poly[(i+1)%n];
+                if(!(a.w>0)||!(b.w>0)){twice=0;break;}
+                twice+=double(a.x/a.w)*(b.y/b.w)-double(b.x/b.w)*(a.y/a.w);}
+            area=diag::costAreaBin(std::fabs(twice)*.5*width*240.0/4.0);
+        }
+        ++d.bins[diag::costDepthBin(depth)][area];++d.tris;
+        if(depth>diag::CostFar)++d.far;
+        if(!area)++d.offscreen;else if(area<=2)++d.tiny;
+    }
+}
+// GPU-skinned draws: no posed positions here; depth from the model origin.
+void costSkinned(const uint16_t* indices,unsigned count){
+    auto& d=diag::costTally.draw;costVertexRuns(indices,count);
+    const uint32_t tris=count/3;d.bins[diag::costDepthBin(d.origin)][diag::CostAreaBins-1]+=tris;d.tris+=tris;
+    if(d.origin>diag::CostFar)d.far+=tris;
+}
+#endif
 }
 void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& transform,bool backdrop,MaterialBinder material,void* context,ShapeVisible visible){
     // DIAG draw-timing.txt: the call's ticks, and below its setups, draws and resets.
@@ -1744,6 +2016,10 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
     // Later draws (effects, sprites) don't all set a depth mapping.
     struct RestoreDepthMap {bool on;~RestoreDepthMap(){if(on)C3D_DepthMap(true,-1.f,0.f);}} restoreDepthMap{behind};
     C3D_Mtx mv;Mtx_Multiply(&mv,&view_,&transform);
+#ifndef MKW_RELEASE
+    if(diag::costTally.draw.on)diag::costTally.draw.origin=-mv.r[2].w; // DIAG track-cost.txt: view depth of the model origin
+    float cullRows[16]{}; // DIAG fine-cull-verify.txt
+#endif
     drawSampledLighting_=model.dynamicLightTextures;
     ClipFrustum staticFrustum;
     // projection_ x mv when culling computes it; the clip fuse reuses it.
@@ -1754,6 +2030,9 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
         auto& clip=cullClip;Mtx_Multiply(&clip,&projection_,&mv);haveCullClip=true;float rows[16];
         for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c)rows[r*4+c]=clip.r[r].c[3-c];
         staticFrustum=ClipFrustum(rows);
+#ifndef MKW_RELEASE
+        std::memcpy(cullRows,rows,sizeof rows);
+#endif
         if(!staticFrustum.intersects({model.minimum,model.maximum})){stats_.culledTriangles+=model.indexCount/3;return;}
     }
     // 3D: what was recorded for both eyes (culled against their union) is
@@ -1774,15 +2053,54 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
     if(diagCollapse_){C3D_Mtx point;Mtx_Zeros(&point);point.r[3].w=1;uploadProjection(projectionLoc_,point);}
     else if(backdrop&&courseLighting_&&skyFar)uploadProjection(projectionLoc_,fartherProjection(projection_,8.f));
     else uploadProjection(projectionLoc_,projection_);
-    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,modelViewLoc_,&mv);
+    // Packed course parts (Model::packCourse): their own record, and s16
+    // positions take their grid through the model-view matrix.
+    const VertexFormat format=vertices==model.vertices?model.vertexFormat:VertexFormat::Full;
+    if(format==VertexFormat::ShortPosition){
+        C3D_Mtx grid;Mtx_Identity(&grid);
+        grid.r[0].x=model.positionScale[0];grid.r[1].y=model.positionScale[1];grid.r[2].z=model.positionScale[2];
+        grid.r[0].w=model.positionOffset[0];grid.r[1].w=model.positionOffset[1];grid.r[2].w=model.positionOffset[2];
+        C3D_Mtx gridView;Mtx_Multiply(&gridView,&mv,&grid);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,modelViewLoc_,&gridView);
+    }else C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,modelViewLoc_,&mv);
     C3D_BoolUnifSet(GPU_VERTEX_SHADER,staticLightingLoc_,model.staticLightingBaked);
     if((!model.fixedLighting&&!model.staticLightingBaked)||model.liveDiffuse)normalMatrixNow(mv);
     const bool litSkin=skinPalette_&&model.skinBoneIndices&&!model.fixedLighting&&(!model.staticLightingBaked||model.liveDiffuse);
     // Unlit skins keep the palette index in the normal's x: load that field
     // into inbone (v4), the register the shader reads it from.
     auto* attr=C3D_GetAttrInfo();AttrInfo_Init(attr);
-    AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,skinPalette_&&!litSkin?4:1,GPU_FLOAT,3);AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
-    auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,vertices,sizeof(Vertex),4,0x3210);
+    auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);
+    // A split part (Model::fullVertices): its NoNormal records follow the
+    // GMDL ones, numbered after them, so their buffer starts fullVertices*12
+    // bytes in (record i at base + i*32); lit submeshes rebind the GMDL record
+    // below (bindSplit).
+    const bool split=format==VertexFormat::NoNormal&&model.fullVertices;
+    const void* noNormalBase=split?static_cast<const void*>(reinterpret_cast<const uint8_t*>(vertices)+size_t(model.fullVertices)*(sizeof(Vertex)-sizeof(NoNormalVertex))):vertices;
+    if(format==VertexFormat::NoNormal){
+        // No normal loader: the shader's innormal (v1) is read only by lit,
+        // environment-mapped or skinned draws, none of which this part has.
+        AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
+        BufInfo_Add(buf,noNormalBase,sizeof(NoNormalVertex),3,0x210);
+    }else if(format==VertexFormat::ShortPosition){
+        AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,0,GPU_SHORT,3);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
+        BufInfo_Add(buf,vertices,sizeof(ShortVertex),3,0x210);
+    }else{
+        AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,skinPalette_&&!litSkin?4:1,GPU_FLOAT,3);AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
+        BufInfo_Add(buf,vertices,sizeof(Vertex),4,0x3210);
+    }
+    const VertexPositions positionsOf=model.positions(vertices);
+    bool splitFull=false;
+    auto bindSplit=[&](bool full){
+        auto* a=C3D_GetAttrInfo();AttrInfo_Init(a);auto* b=C3D_GetBufInfo();BufInfo_Init(b);
+        if(full){
+            AttrInfo_AddLoader(a,0,GPU_FLOAT,3);AttrInfo_AddLoader(a,skinPalette_&&!litSkin?4:1,GPU_FLOAT,3);AttrInfo_AddLoader(a,2,GPU_FLOAT,4);AttrInfo_AddLoader(a,3,GPU_UNSIGNED_BYTE,4);
+            BufInfo_Add(b,vertices,sizeof(Vertex),4,0x3210);
+        }else{
+            AttrInfo_AddLoader(a,0,GPU_FLOAT,3);AttrInfo_AddLoader(a,2,GPU_FLOAT,4);AttrInfo_AddLoader(a,3,GPU_UNSIGNED_BYTE,4);
+            BufInfo_Add(b,noNormalBase,sizeof(NoNormalVertex),3,0x210);
+        }
+        splitFull=full;
+    };
     if(model.staticEnvironment2){
         // Buffer permutations address loader slots, not shader registers.
         // This is loader slot 4 mapped to v5 (instaticuv); retain baked UVs.
@@ -1836,9 +2154,21 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
     const Submesh* last=nullptr;bool lastRetail=false,lastEnvironment=false,pendingEnd=false;
     // The fog inputs of the state blocks' key.
     const uint32_t fogKey=stateCache?retailFogKey():0;
+    // courseFacing: this draw's clip minors (computed at its first filtered submesh).
+    bool facingReady=false;float facingSigned[4]{},facingBase=0,facingRadius=0;
+    GPU_CULLMODE boundCull=GPU_CULL_NONE;bool boundCullKnown=false;
     C3D_Tex projectedWaterTexture{};
     // DIAG texture-use.txt: the data of the textures bound to units 0-2 (diag::textureDrawn).
     const void* useData[3]{};
+#ifndef MKW_RELEASE
+    // DIAG perf-cull.csv (mkw/fine_cull.hpp): this draw's culling counts.
+    CullTests fineCullTests;uint32_t fineCullRanges=0,fineCullTriangles=0,fineCullVertices=0;
+    struct FineCullCount {const bool on;CullTests& tests;uint32_t& ranges;uint32_t& triangles;uint32_t& vertices;
+        ~FineCullCount(){if(!on)return;auto& c=fineCull::counts;const uint32_t frame=diag::renderTrace.listFrame.load(std::memory_order_relaxed);
+            if(frame!=c.lastFrame){c.lastFrame=frame;++c.frames;}
+            ++c.draws;c.submeshTests+=tests.submesh;c.blockTests+=tests.blocks;c.childTests+=tests.children;c.ranges+=ranges;c.triangles+=triangles;c.vertexRuns+=vertices;}
+    } fineCullCount{cull&&!skinCull&&!diagCollapse_,fineCullTests,fineCullRanges,fineCullTriangles,fineCullVertices};
+#endif
     for(std::size_t i=0;i<model.submeshes.size();++i){
         if(visible && !visible(context,i))continue;
         const auto& s=model.submeshes[i];
@@ -1861,17 +2191,54 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
             }
             if(!shownParts&&parts->size()<=64){++stats_.culledSubmeshes;continue;}
         }
-        VisibleRanges ranges;
+        VisibleRanges ranges;bool setupOnly=false;
         if(skinCull){
             ranges=selectSkinVisible(model.skinVisibility[i],skinPalette_,skinStride_,frustum);unsigned submitted=0;
             for(unsigned n=0;n<ranges.count;++n)submitted+=ranges.ranges[n].count;
             stats_.culledTriangles+=(s.count-submitted)/3;
             if(!ranges.count){++stats_.culledSubmeshes;continue;}
         }else if(cull){
-            ranges=selectVisible(spatial?model.contactCoarseVisibility[i]:regionCull?model.regionVisibility[region][i]:model.visibility[i],frustum);unsigned submitted=0;
+            const auto& mesh=spatial?model.contactCoarseVisibility[i]:regionCull?model.regionVisibility[region][i]:model.visibility[i];
+            // Fine culling (mkw/fine_cull.hpp): only for meshes with children.
+            if(fineCull::on&&mesh.childTriangles){
+                CullTests tests;ranges=selectVisibleFine(mesh,frustum,fineCull::FineRanges,fineCull::ChildSlack,tests);
+                // No child left where a block passed: the material is still set up (no
+                // draws), so later draws inherit the same GPU state as with the blocks.
+                setupOnly=!ranges.count&&tests.blocksPassed;
+#ifndef MKW_RELEASE
+                if(setupOnly&&!diagCollapse_)++fineCull::counts.setupOnly;
+                if(fineCull::verify&&!diagCollapse_){
+                    // The blocks' triangles the children left out: each must lie wholly
+                    // outside one clip plane (corners by cullRows, the culling product).
+                    const auto coarse=selectVisible(mesh,frustum);unsigned at=0;
+                    for(unsigned n=0;n<coarse.count;++n)for(uint32_t t=coarse.ranges[n].first;t+2<coarse.ranges[n].first+coarse.ranges[n].count;t+=3){
+                        while(at<ranges.count&&ranges.ranges[at].first+ranges.ranges[at].count<=t)++at;
+                        if(at<ranges.count&&ranges.ranges[at].first<=t)continue; // submitted
+                        ++fineCull::counts.verifyDropped;unsigned outside=63;
+                        for(unsigned k=0;k<3;++k){const Vec3 p=positionsOf[subIndices[t+k]];float c[4];
+                            for(unsigned r=0;r<4;++r)c[r]=cullRows[r*4]*p.x+cullRows[r*4+1]*p.y+cullRows[r*4+2]*p.z+cullRows[r*4+3];
+                            const float d[6]={c[3]+c[0],c[3]-c[0],c[3]+c[1],c[3]-c[1],c[3]+c[2],-c[2]};
+                            for(unsigned q=0;q<6;++q)if(!(d[q]<0.f))outside&=~(1u<<q);}
+                        if(!outside)++fineCull::counts.verifyFailed;
+                    }
+                }
+                fineCullTests.submesh+=tests.submesh;fineCullTests.blocks+=tests.blocks;fineCullTests.children+=tests.children;
+#endif
+            }else{
+                ranges=selectVisible(mesh,frustum);
+#ifndef MKW_RELEASE
+                // Counting the old path's block tests costs a test: only with cull-vertex-count.txt.
+                if(fineCull::countVertices){++fineCullTests.submesh;const unsigned m=frustum.remainingPlanes(mesh.bounds);if(m&&m!=ClipFrustum::Outside)fineCullTests.blocks+=uint32_t(mesh.blocks.size());}
+#endif
+            }
+            unsigned submitted=0;
             for(unsigned n=0;n<ranges.count;++n)submitted+=ranges.ranges[n].count;
             stats_.culledTriangles+=(s.count-submitted)/3;
-            if(!ranges.count){++stats_.culledSubmeshes;continue;}
+#ifndef MKW_RELEASE
+            fineCullRanges+=ranges.count;fineCullTriangles+=submitted/3;
+            if(fineCull::countVertices)for(unsigned n=0;n<ranges.count;++n)fineCullVertices+=cacheorder::fifoMisses(subIndices+ranges.ranges[n].first,ranges.ranges[n].count,16);
+#endif
+            if(!ranges.count&&!setupOnly){++stats_.culledSubmeshes;continue;}
         }else ranges.append({s.first,s.count});
         const SubmeshOverride* o=overrides_&&i<overrideCount_&&overrides_[i].flags?&overrides_[i]:nullptr;
         // The model's own course/sky material animation (GMDL MAN1), unless the draw overrides it.
@@ -2460,7 +2827,8 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
                           ambient*(courseLighting_?1.25f:1.f),1.f);
         }
         // Imported GX triangles wind clockwise relative to their outward normals.
-        C3D_CullFace(cameraCull((s.flags&4)||backdrop?GPU_CULL_NONE:GPU_CULL_FRONT_CCW,mv));
+        boundCull=cameraCull((s.flags&4)||backdrop?GPU_CULL_NONE:GPU_CULL_FRONT_CCW,mv);boundCullKnown=true;
+        C3D_CullFace(boundCull);
         const bool sourceState=s.flags&(1u<<31),blended=s.flags&2;
         const GPU_TESTFUNC alphaComparisons[]={GPU_NEVER,GPU_LESS,GPU_EQUAL,GPU_LEQUAL,GPU_GREATER,GPU_NOTEQUAL,GPU_GEQUAL,GPU_ALWAYS};
         const uint8_t alphaReferences[]={0,128,165,255};
@@ -2529,7 +2897,7 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
         tevDry_=false;
         // A material binder owns the combiners and may replace any state above.
         drawCullSet_=false;
-        if(material)material(context,i);
+        if(material){material(context,i);boundCullKnown=false;} // the binder may set its own cull mode
         // Native CFL owns stages 0..2. Apply the same Star C1 contribution
         // after its material binder, retaining coverage for glasses/masks.
         if(model.nativeMiiLighting&&additiveColor){
@@ -2608,6 +2976,8 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
             C3D_BoolUnifSet(GPU_VERTEX_SHADER,environmentPrimaryLoc_,primaryEnvironment);
         }
         uvPlainNow(true);
+        // Split part: this submesh's records (indices name its copies).
+        if(split){const bool full=i<model.fullSubmesh.size()&&model.fullSubmesh[i];if(full!=splitFull)bindSplit(full);}
         const auto useDraws=stats_.drawCalls;const auto usePixels=stats_.pixels;
         if(parts){
             const bool environment=!model.staticLightingBaked&&!(s.lighting&retail::FixedEnvironment)&&(s.flags&(1u<<25))&&((s.flags>>12)&3)==3&&rigid_->stride>=21;
@@ -2629,7 +2999,10 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
                 }
                 drawElements(part.count,model.indices+part.first);
                 stats_.triangles+=part.count/3;++stats_.drawCalls;
-                if(diag::modelPixels){C3D_Mtx partClip;Mtx_Multiply(&partClip,&projection_,&partView);stats_.pixels+=trianglePixels(partClip,vertices,model.indices+part.first,part.count,screenWidth_);}
+                if(diag::modelPixels){C3D_Mtx partClip;Mtx_Multiply(&partClip,&projection_,&partView);stats_.pixels+=trianglePixels(partClip,positionsOf,model.indices+part.first,part.count,screenWidth_);}
+#ifndef MKW_RELEASE
+                if(diag::costTally.draw.on){C3D_Mtx partClip;Mtx_Multiply(&partClip,&projection_,&partView);costTriangles(partClip,positionsOf,model.indices+part.first,part.count,screenWidth_);}
+#endif
             }
             if(environment){
                 C3D_FVUnifSet(GPU_VERTEX_SHADER,envParamLoc_,1,0,0,0);
@@ -2649,20 +3022,68 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
                 if(kept){
                     drawElements(kept,list);
                     stats_.triangles+=kept/3;++stats_.drawCalls;
-                    if(diag::modelPixels)stats_.pixels+=trianglePixels(clip,vertices,list,kept,screenWidth_);
+                    if(diag::modelPixels)stats_.pixels+=trianglePixels(clip,positionsOf,list,kept,screenWidth_);
+#ifndef MKW_RELEASE
+                    if(diag::costTally.draw.on)costTriangles(clip,positionsOf,list,kept,screenWidth_);
+#endif
                 }
                 ranges.count=0;
             }
         }
+        // Course facing cull (courseFacing): each range's triangles that faceCull keeps, from
+        // this submesh's planes (Model::buildCourseFacing over the same index list). The
+        // test is facingIndicesNow's with a per-triangle bound: drop only where
+        // sign * v > 1% of |q_xyz| + |q_w| * |a| (>= 1% of |q_w| |C - a| |N|), so edge-on
+        // triangles stay with the GPU. Exact: the dropped ones are those it culls.
+        // The mode the GPU holds for this draw: set above, or kept from the previous submesh on a repeat.
+        const GPU_CULLMODE faceCull=boundCullKnown&&!material?boundCull:GPU_CULL_NONE;
+        const bool facingOn=courseFacingIndices_&&cull&&haveCullClip&&!skinPalette_&&!rigid_&&!diagCollapse_&&
+            vertices==model.vertices&&faceCull!=GPU_CULL_NONE&&i<model.coursePlaneLists.size()&&model.coursePlaneLists[i]==subIndices;
+        if(facingOn&&!facingReady){
+            float q[4][3];
+            for(unsigned c=0;c<4;++c){q[c][0]=cullClip.r[0].c[3-c];q[c][1]=cullClip.r[1].c[3-c];q[c][2]=cullClip.r[3].c[3-c];}
+            auto det3=[&](unsigned a,unsigned b,unsigned c){
+                return q[a][0]*(q[b][1]*q[c][2]-q[b][2]*q[c][1])-q[b][0]*(q[a][1]*q[c][2]-q[a][2]*q[c][1])+q[c][0]*(q[a][1]*q[b][2]-q[a][2]*q[b][1]);};
+            const float m0=det3(1,2,3),m1=det3(0,2,3),m2=det3(0,1,3),m3=det3(0,1,2);
+            facingBase=.01f*std::sqrt(m0*m0+m1*m1+m2*m2);facingRadius=.01f*std::fabs(m3);
+            facingSigned[0]=m0;facingSigned[1]=m1;facingSigned[2]=m2;facingSigned[3]=m3;facingReady=true;
+        }
+        const float facingSign=faceCull==GPU_CULL_FRONT_CCW?1.f:-1.f;
         for(unsigned n=0;n<ranges.count;++n){
             const auto range=ranges.ranges[n];
-            drawElements(range.count,subIndices+range.first);
-            stats_.triangles+=range.count/3;++stats_.drawCalls;
-            if(diag::modelPixels&&!skinPalette_){C3D_Mtx clip;Mtx_Multiply(&clip,&projection_,&mv);stats_.pixels+=trianglePixels(clip,vertices,subIndices+range.first,range.count,screenWidth_);}
+            const uint16_t* list=subIndices+range.first;unsigned count=range.count;
+            if(facingOn){
+                if(courseFacingUsed_+range.count<=kCourseFacingIndices){
+                    const float w0=facingSign*facingSigned[0],w1=facingSign*facingSigned[1],w2=facingSign*facingSigned[2],w3=facingSign*facingSigned[3];
+                    uint16_t* out=courseFacingIndices_+courseFacingUsed_;unsigned kept=0;
+                    const uint16_t* in=list;const auto* plane=model.coursePlanes.data()+range.first/3;
+                    for(unsigned t=0,triangles=range.count/3;t<triangles;++t,in+=3,++plane){
+                        const auto& p=*plane;
+                        if(w0*p[0]+w1*p[1]+w2*p[2]+w3*p[3]-facingRadius*p[4]>facingBase)continue;
+                        out[kept]=in[0];out[kept+1]=in[1];out[kept+2]=in[2];kept+=3;
+                    }
+                    courseFacingUsed_+=kept;++courseFacingDraws;courseFacingKept+=kept/3;courseFacingTotal+=range.count/3;
+                    list=out;count=kept;
+                }else ++courseFacingFull;
+            }
+            if(!count)continue;
+            drawElements(count,list);
+            stats_.triangles+=count/3;++stats_.drawCalls;
+            if(diag::modelPixels&&!skinPalette_){C3D_Mtx clip;Mtx_Multiply(&clip,&projection_,&mv);stats_.pixels+=trianglePixels(clip,positionsOf,list,count,screenWidth_);}
+#ifndef MKW_RELEASE
+            if(diag::costTally.draw.on){
+                if(skinPalette_)costSkinned(list,count);
+                else{C3D_Mtx clip;Mtx_Multiply(&clip,&projection_,&mv);costTriangles(clip,positionsOf,list,count,screenWidth_);}
+            }
+#endif
         }
         if(diag::textureUse)diag::textureDrawn(useData,3,stats_.drawCalls-useDraws,stats_.pixels-usePixels);
         if(menuEnvironment||(s.lighting&retail::FixedEnvironment))clearEnvironmentUvNow();
         pendingEnd=retail;
+    }
+    if(courseFacingUsed_>courseFacingFlushed_){
+        flushGpuData(courseFacingIndices_+courseFacingFlushed_,(courseFacingUsed_-courseFacingFlushed_)*sizeof(uint16_t));
+        courseFacingFlushed_=courseFacingUsed_;
     }
     struct ResetTimer {uint64_t& sum;uint64_t start;~ResetTimer(){if(start)sum+=svcGetSystemTick()-start;}} resetTimer{stats_.resetTicks,drawTiming?svcGetSystemTick():0};
     if(pendingEnd)retailEndSubmesh();
@@ -2673,7 +3094,11 @@ void Renderer::drawNow(const Model& model,const Vertex* vertices,const C3D_Mtx& 
     // Later draws (sprites, sparks, other models) expect identity UV rows/tint.
     resetMaterialUniforms();
     if(skinPalette_){C3D_BoolUnifSet(GPU_VERTEX_SHADER,skinnedLoc_,false);C3D_BoolUnifSet(GPU_VERTEX_SHADER,cofactorNormalsLoc_,false);C3D_BoolUnifSet(GPU_VERTEX_SHADER,rigidNormalsLoc_,false);}
-    if(skinPalette_){
+    // Later draws set only their buffers: they expect the GMDL record's loaders.
+    if(skinPalette_||format!=VertexFormat::Full){
+        // Packed parts: through C3D_GetAttrInfo, which marks the loaders for
+        // upload (the pointer taken above no longer does after a draw).
+        if(format!=VertexFormat::Full)attr=C3D_GetAttrInfo();
         AttrInfo_Init(attr);AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,1,GPU_FLOAT,3);AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
     }
     if(model.nativeMiiLighting){C3D_LightEnvBind(nullptr);C3D_BindProgram(&program_);}
@@ -2726,6 +3151,27 @@ const uint16_t* Renderer::facingIndicesNow(const Model& model,unsigned submesh,c
     auto& l=facingLists_[facingNext_++%2];
     l.model=&model;l.submesh=submesh;l.cull=drawCull_;l.clip=clip;l.indices=out;l.count=kept;
     count=kept;return out;
+}
+size_t Model::buildCourseFacing(bool spatialCourse){
+    coursePlanes.assign(indexCount/3,{0,0,0,0,0});coursePlaneLists.assign(submeshes.size(),nullptr);
+    const uint16_t* spatial=cacheIndices?cacheIndices:contactIndices;
+    size_t built=0;
+    for(size_t i=0;i<submeshes.size();++i){
+        const auto& s=submeshes[i];
+        if(!s.count||(s.flags&4))continue; // two-sided: the GPU culls nothing
+        // The list drawNow draws this submesh from (no region culling): the spatial order
+        // for order-safe submeshes when spatialCourse is on, else the authored one.
+        const uint16_t* list=spatialCourse&&spatial&&orderSafe(s)?spatial:indices;
+        coursePlaneLists[i]=list;
+        for(uint32_t t=s.first;t+2<s.first+s.count;t+=3){
+            const Vec3 a=vertices[list[t]].position,b=vertices[list[t+1]].position,e=vertices[list[t+2]].position;
+            const Vec3 n=cross(b-a,e-a);const float length=std::sqrt(dot(n,n));
+            ++built;
+            if(!(length>0.f))continue; // all zero: never dropped
+            coursePlanes[t/3]={n.x/length,-n.y/length,n.z/length,dot(n,a)/length,std::sqrt(dot(a,a))};
+        }
+    }
+    return built;
 }
 void Model::buildFacingCull(unsigned submesh){
     if(submesh>=submeshes.size())return;
@@ -4166,11 +4612,12 @@ void Renderer::freeCrt(){
     crtTex_={};linearFree(crtVertices_);crtVertices_=nullptr;linearFree(crtIndices_);crtIndices_=nullptr;
 }
 void Renderer::crtNow(){
-    // The screen is finished (bloom, HUD, last sprites); 800px frames only. The
-    // top runs before the lower screen begins, the lower one at the frame's end
-    // when this frame drew it (a kept lower picture already has its pass).
+    // The screen is finished (bloom, HUD, last sprites); 400px or 800px (the pass
+    // works per row, 240 either way; each 3D eye restarts the frame and draws it).
+    // The top runs before the lower screen begins, the lower one at the frame's
+    // end when this frame drew it (a kept lower picture already has its pass).
     const bool lower=bottomPass_;
-    if(!crt.on||topScale!=2||execLoadingFrame_||(lower?crtBottomDrawn_||execBottomKept_:crtDrawn_))return;
+    if(!crt.on||execLoadingFrame_||(lower?crtBottomDrawn_||execBottomKept_:crtDrawn_))return;
     (lower?crtBottomDrawn_:crtDrawn_)=true;
     constexpr unsigned Columns=12,Rows=8,Vertices=(Columns+1)*(Rows+1),Indices=Columns*Rows*6;
     if(!crtVertices_){
@@ -4178,17 +4625,19 @@ void Renderer::crtNow(){
         // the top grid (400 wide), then the lower one (320 wide).
         crtVertices_=static_cast<Vertex*>(linearAlloc(2*Vertices*sizeof(Vertex)));
         crtIndices_=static_cast<uint16_t*>(linearAlloc(Indices*sizeof(uint16_t)));
-        if(!crtVertices_||!crtIndices_||!C3D_TexInit(&crtTex_,8,8,GPU_RGBA8)){freeCrt();crt.on=false;return;}
+        if(!crtVertices_||!crtIndices_||!C3D_TexInit(&crtTex_,256,8,GPU_RGBA8)){freeCrt();crt.on=false;return;}
         C3D_TexSetFilter(&crtTex_,GPU_NEAREST,GPU_NEAREST);C3D_TexSetWrap(&crtTex_,GPU_REPEAT,GPU_REPEAT);
         // The blend doubles source x destination, so texel 128 leaves a pixel
         // unchanged. Texture s runs down the screen's rows: texel column x is
-        // row x mod 8 (8x8 Morton tile; the pattern ignores y and flips).
+        // row x (256 columns cover the 240 rows, so any period fits; 8x8 Morton
+        // tiles side by side; the pattern ignores y and flips).
         auto level=[](float f){return uint32_t(std::clamp(f*127.5f+0.5f,0.f,255.f));};
         const uint32_t bright=level(crt.bright)*0x01010101u,dark=level(crt.dark)*0x01010101u;
+        const unsigned period=std::clamp(crt.period,2u,4u);
         auto* texels=static_cast<uint32_t*>(crtTex_.data);
-        for(unsigned y=0;y<8;++y)for(unsigned x=0;x<8;++x){
-            const unsigned at=(x&1)|((y&1)<<1)|((x&2)<<1)|((y&2)<<2)|((x&4)<<2)|((y&4)<<3);
-            texels[at]=(x&1)?dark:bright;
+        for(unsigned y=0;y<8;++y)for(unsigned x=0;x<256;++x){
+            const unsigned t=x&7,at=(x>>3)*64+((t&1)|((y&1)<<1)|((t&2)<<1)|((y&2)<<2)|((t&4)<<2)|((y&4)<<3));
+            texels[at]=x%period==period-1?dark:bright;
         }
         C3D_TexFlush(&crtTex_);
         // A 12x8 grid carries the vignette in its vertex colours (no second
@@ -4200,7 +4649,7 @@ void Renderer::crtNow(){
                 const float x=width*float(i)/Columns,y=240.f*float(j)/Rows;
                 const float dx=(x-width*.5f)/(width*.5f),dy=(y-120.f)/120.f,r=(dx*dx+dy*dy)*0.5f;
                 const uint8_t c=uint8_t(std::clamp((1.f-k*r*r)*255.f+0.5f,0.f,255.f));
-                crtVertices_[screen*Vertices+j*(Columns+1)+i]={{x,y,0},{0,0,1},{y/8.f,0},{0,0},{c,c,c,255}};
+                crtVertices_[screen*Vertices+j*(Columns+1)+i]={{x,y,0},{0,0,1},{y/256.f,0},{0,0},{c,c,c,255}};
             }
         }
         unsigned n=0;

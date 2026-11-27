@@ -175,7 +175,7 @@ bool RaceGrid::reset(){
     using namespace Kinoko;
     drivers_={};finished_={};laps_={};route_.clear();bulletRoute_.clear();
     auto* config=System::RaceConfig::Instance();if(!config)return false;
-    count_=config->raceScenario().playerCount;ghosts_=0;
+    count_=config->raceScenario().playerCount;ghosts_=0;aiGhosts=0;
     for(unsigned i=0;i<count_;++i){const auto& p=config->raceScenario().players[i];
         if(p.type!=System::RaceConfig::Player::Type::Ghost)continue;
         ghosts_|=1u<<i;
@@ -258,7 +258,7 @@ void RaceGrid::beforeStep(uint16_t bulletPlayers){
     for(unsigned j=1;j<count_;++j)leaderCompletion=std::max(leaderCompletion,manager->player(j).raceCompletion());
     // Retail Enemy::AI drives every CPU outside a Bullet (and player zero for QA).
     uint32_t aiMask=0;
-    for(unsigned i=0;i<count_;++i)if(!(bulletPlayers&(1u<<i))&&(i||driveLocal)&&!ghost(i))aiMask|=1u<<i;
+    for(unsigned i=0;i<count_;++i)if(!(bulletPlayers&(1u<<i))&&(i||driveLocal)&&(!ghost(i)||(aiGhosts>>i&1)))aiMask|=1u<<i;
     if(ai_.ready()){
         // CPUs run the retail stuck handler inside CpuAi; the QA autopilot keeps
         // the adapted recovery below.
@@ -266,7 +266,7 @@ void RaceGrid::beforeStep(uint16_t bulletPlayers){
         ai_.step(aiMask,ranks_,laps_,finished_,3);
     }
     for(unsigned i=0;i<count_;++i){
-        if(ghost(i))continue;
+        if(ghost(i)&&!(aiGhosts>>i&1))continue;
         const bool bullet=(bulletPlayers&(1u<<i))!=0;
         auto& d=drivers_[i];
         auto* kart=objects->object(i);

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstring>
 #include "mkw/retail_lighting.hpp"
+#include "mkw/course_phase_ranges.hpp"
 namespace mkw::opaqueOrder {
 // NW4R draws a model's DrawOpa list in authored order, then its DrawXlu list.
 // A DrawOpa material that blends and writes depth stays in that first list:
@@ -11,6 +12,13 @@ namespace mkw::opaqueOrder {
 // The same applies to Dry Dry Ruins sand_m, GCN Waluigi Stadium
 // wl_road3BANKover and Chain Chomp Wheel cs_glass_m. Rainbow Road z2_road
 // keeps its own pass (rainbow_shadow.hpp).
+// The table used is the generated one (courseOpaqueOrder,
+// tools/generate_course_phases.py: every source DrawOpa material that blends
+// and writes depth, matched triangle by triangle; z2_road takes the rainbow
+// pass bit). On the retail disc it lists exactly the four ranges below with
+// bit 30 and Rainbow Road's z2_road with bit 27 (rainbow_shadow.hpp's range).
+// DIAG off-file no-opaque-order.txt: the hand table below instead.
+inline bool generated=true;
 struct Range {const char* name;unsigned vertices,indices,first,count;};
 inline constexpr Range Ranges[]={
 {"course_27_000.gmdl",7919,22587,14001,1086}, // a2_jimen
@@ -20,6 +28,11 @@ inline constexpr Range Ranges[]={
 };
 template<class Model> void apply(Model& model,const char* path){
 const char* name=std::strrchr(path,'/');name=name?name+1:path;
+if(generated){
+for(const auto& r:courseOpaqueOrder::Ranges)if(r.count&&model.vertexCount==r.vertices&&model.indexCount==r.indices&&!std::strcmp(name,r.name))
+for(auto& s:model.submeshes)if(s.first==r.first&&s.count==r.count&&(s.flags&2)&&(s.flags&(1u<<24)))s.lighting|=1u<<r.bit;
+return;
+}
 for(const auto& r:Ranges)if(model.vertexCount==r.vertices&&model.indexCount==r.indices&&!std::strcmp(name,r.name))
 for(auto& s:model.submeshes)if(s.first==r.first&&s.count==r.count&&(s.flags&2)&&(s.flags&(1u<<24)))s.lighting|=retail::AuthoredOpaqueOrder;
 }

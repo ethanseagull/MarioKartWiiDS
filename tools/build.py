@@ -117,7 +117,11 @@ def default_jobs():
 def title_version():
     """makerom's -ver: major << 10 | minor << 4 | micro (0.9.4 -> 148)."""
     major, minor, micro = (int(x) for x in (REPO / 'VERSION').read_text().strip().split('.'))
-    return major << 10 | minor << 4 | micro
+    # tools/release/title-revision.txt: extra CIA revisions of one VERSION (a banner
+    # fix must raise the title version or HOME keeps the cached banner).
+    rev = REPO / 'tools/release/title-revision.txt'
+    extra = int(rev.read_text().strip()) if rev.is_file() else 0
+    return (major << 10 | minor << 4 | micro) + extra
 
 
 # ---------------------------------------------------------------------------
@@ -927,13 +931,105 @@ class Builder:
 
     # -- package ----------------------------------------------------------
 
+    # -- incremental packaging ----------------------------------------------
+    # A package step is skipped when its arguments, the tools it runs and the
+    # content of its inputs are those of its last run and its outputs are still
+    # the files that run wrote (package/memo.json). Content hashes are kept by
+    # path, size and modification time (package/hash-cache.json): an unchanged
+    # input is not read again, and one a cook rewrote with the same bytes still
+    # matches. A code-only build so repacks nothing; the CIA is always rebuilt.
+
+    def tool_digest(self, names):
+        """The given tools/ files and, for Python, the tools modules they import
+        (recursively); for C and C++, the quoted local includes."""
+        tools, seen, todo = self.root / 'tools', set(), list(names)
+        while todo:
+            name = todo.pop()
+            if name in seen or not (tools / name).is_file():
+                continue
+            seen.add(name)
+            text = (tools / name).read_text(encoding='utf-8', errors='replace')
+            if name.endswith('.py'):
+                for m in re.finditer(r'^\s*(?:from\s+(\w+)\s+import|import\s+([\w, ]+))', text, re.M):
+                    for module in (m.group(1) or m.group(2)).split(','):
+                        if module.split():
+                            todo.append(module.split()[0] + '.py')  # 'x as y' -> x
+            else:
+                todo += re.findall(r'^\s*#include\s+"([^"]+)"', text, re.M)
+        h = hashlib.sha256()
+        for name in sorted(seen):
+            h.update(f'{name}\0{self.memo_hash(tools / name)}\0'.encode())
+        return h.hexdigest()
+
+    def memo_hash(self, path):
+        path = Path(path)
+        try:
+            stat = path.stat()
+        except OSError:
+            return 'absent'
+        key, stamp = str(path.resolve()), [stat.st_size, stat.st_mtime_ns]
+        row = self.hash_cache.get(key)
+        if not row or row[:2] != stamp:
+            row = self.hash_cache[key] = stamp + [digest(path)]
+            self.hash_cache_changed = True
+        return row[2]
+
+    def memo_inputs(self, paths):
+        """Content hashes of files, and of every file in folders."""
+        out = []
+        for p in map(Path, paths):
+            files = sorted(f for f in p.rglob('*') if f.is_file()) if p.is_dir() else [p]
+            out += [[f.as_posix(), self.memo_hash(f)] for f in files]
+        return out
+
+    @staticmethod
+    def memo_outputs(paths):
+        out = []
+        for p in map(Path, paths):
+            try:
+                stat = p.stat()
+                out.append([p.as_posix(), stat.st_size, stat.st_mtime_ns])
+            except OSError:
+                out.append([p.as_posix(), -1, 0])
+        return out
+
+    def memo_step(self, name, describe, tools, inputs, outputs, run):
+        """Runs `run` unless nothing it depends on changed since its last run
+        (see above). `tools`: the tools/ files it runs; `outputs`: the paths
+        it writes, or a function listing them."""
+        listed = outputs if callable(outputs) else (lambda: outputs)
+        began = time.monotonic()
+        key = hashlib.sha256(json.dumps([name, [str(d) for d in describe], self.tool_digest(tools),
+                                         self.memo_inputs(inputs)]).encode()).hexdigest()
+        if self.hash_cache_changed:
+            write_json(self.work / 'package/hash-cache.json', self.hash_cache)
+            self.hash_cache_changed = False
+        last = self.memo.get(name)
+        written = self.memo_outputs(listed())
+        checked = time.monotonic() - began
+        kept = bool(last and last['key'] == key and written and last['outputs'] == written)
+        with (self.logs / 'package-memo.log').open('a', encoding='utf-8') as memo_log:
+            memo_log.write(f"{name}: {'kept' if kept else 'run (' + ('no record' if not last else 'inputs changed' if last['key'] != key else 'outputs changed') + ')'}, "
+                           f'checked {len(inputs)} inputs in {checked:.1f} s' + chr(10))
+        if kept:
+            return False
+        run()
+        self.memo[name] = {'key': key, 'outputs': self.memo_outputs(listed())}
+        write_json(self.work / 'package/memo.json', self.memo)
+        return True
+
     def package(self):
         root, out = self.root, self.output
         stage = self.work / 'package'
         stage.mkdir(parents=True, exist_ok=True)
+        self.memo = read_json(stage / 'memo.json', {})
+        (self.logs / 'package-memo.log').write_text('', encoding='utf-8')
+        self.hash_cache, self.hash_cache_changed = read_json(stage / 'hash-cache.json', {}), False
         shutil.copy2(self.compile_dir / 'mkw-3ds.3dsx', root / 'build/mkw-3ds.3dsx')
         self.py('pause-controls', 'cook_pause_controls.py')
         self.py('loading-picture', 'cook_loading_picture.py')
+        # The race loading screen's course reveal (New 3DS): from the Standings, course info box and lower screen cooks.
+        self.py('loading-reveal', 'cook_loading_reveal.py', '--jobs', str(self.jobs))
         self.py('pack-menu', 'pack_menu_assets.py')
         # Course parts' vertex-cache triangle order, stored beside each part as
         # <part>.cord (tools/course_cache_order.cpp: the same code the game runs
@@ -946,7 +1042,10 @@ class Builder:
             track_list = models_dir / (course['prefix'] + '.list')
             if track_list.is_file():
                 parts += [models_dir / (name + '.gmdl') for name in track_list.read_text().split()]
-        self.run('cache-order', [order_tool, *parts])
+        cords = [part.with_suffix('.cord') for part in parts]
+        self.memo_step('cache-order', [len(parts)], ['course_cache_order.cpp'],
+                       [*parts, *(root / 'include/mkw' / h for h in ('vertex_cache_order.hpp', 'visibility.hpp', 'math.hpp'))],
+                       lambda: [c for c in cords if c.is_file()], lambda: self.run('cache-order', [order_tool, *parts]))
         listing = json.loads(subprocess.run([self.python, 'tools/resource_manifest.py'], cwd=root, env=self.env,
                                             capture_output=True, text=True, check=True).stdout)
         from menu_asset_inputs import compiled_menu_textures
@@ -958,12 +1057,20 @@ class Builder:
             raise BuildError('Resource map names missing files: ' + ', '.join(missing[:10]))
         write_json(stage / 'runtime-files.json', listing)
         menu = root / 'sd-card/3ds/mkw-3ds/menu.pak'
-        self.py('pack-race', 'pack_race_assets.py', stage / 'runtime-files.json', stage / 'race-base.pak', '--exclude-menu', menu)
-        self.py('pack-lod', 'pack_racer_lod.py', '--base', stage / 'race-base.pak', '--overlay', root / 'build/racer-lod', '--output', stage / 'race-lod.pak')
-        self.py('pack-mii', 'pack_mii_racers.py', '--base', stage / 'race-lod.pak', '--overlay', root / 'build/mii-racers', '--output', stage / 'race-mii.pak')
-        self.py('pack-unlit', 'pack_unlit_banks.py', stage / 'race-mii.pak', stage / 'race-unlit.pak')
+        self.memo_step('pack-race', [], ['pack_race_assets.py'], [stage / 'runtime-files.json', menu, *listing.values()], [stage / 'race-base.pak'],
+                       lambda: self.py('pack-race', 'pack_race_assets.py', stage / 'runtime-files.json', stage / 'race-base.pak', '--exclude-menu', menu))
+        self.memo_step('pack-lod', [], ['pack_racer_lod.py'], [stage / 'race-base.pak', root / 'build/racer-lod'], [stage / 'race-lod.pak'],
+                       lambda: self.py('pack-lod', 'pack_racer_lod.py', '--base', stage / 'race-base.pak', '--overlay', root / 'build/racer-lod',
+                                       '--output', stage / 'race-lod.pak'))
+        self.memo_step('pack-mii', [], ['pack_mii_racers.py'], [stage / 'race-lod.pak', root / 'build/mii-racers'], [stage / 'race-mii.pak'],
+                       lambda: self.py('pack-mii', 'pack_mii_racers.py', '--base', stage / 'race-lod.pak', '--overlay', root / 'build/mii-racers',
+                                       '--output', stage / 'race-mii.pak'))
+        self.memo_step('pack-unlit', [], ['pack_unlit_banks.py'], [stage / 'race-mii.pak'], [stage / 'race-unlit.pak'],
+                       lambda: self.py('pack-unlit', 'pack_unlit_banks.py', stage / 'race-mii.pak', stage / 'race-unlit.pak'))
         # Animated racer parts: welded, cache-ordered index buffers (same picture).
-        self.py('pack-weld', 'pack_racer_weld.py', stage / 'race-unlit.pak', stage / 'race.pak', '--report', stage / 'race-weld.json')
+        self.memo_step('pack-weld', [], ['pack_racer_weld.py'], [stage / 'race-unlit.pak'], [stage / 'race.pak', stage / 'race-weld.json'],
+                       lambda: self.py('pack-weld', 'pack_racer_weld.py', stage / 'race-unlit.pak', stage / 'race.pak', '--report',
+                                       stage / 'race-weld.json'))
 
         # Every file goes into a pack but the 3DSX; the game's fopen finds them
         # there (src/asset_pack.cpp openFile). Files neither pack holds yet:
@@ -1001,8 +1108,13 @@ class Builder:
                 (stage / f'{name}-order.txt').write_text(order, encoding='utf-8')
                 args = [source]
             # A new file, never rewritten in place: output/sd links to the last one.
-            archives[-1].unlink(missing_ok=True)
-            self.run('pakpack-' + name, [pakpack, *args, stage / f'{name}-order.txt', archives[-1], '@' + str(stage / f'{name}-loose.txt')])
+            def pack(name=name, args=args, archive=archives[-1]):
+                archive.unlink(missing_ok=True)
+                self.run('pakpack-' + name, [pakpack, *args, stage / f'{name}-order.txt', archive, '@' + str(stage / f'{name}-loose.txt')])
+            sources = [line.split('=', 1)[1] for line in loose[name]]
+            bases = [a for a in args if isinstance(a, Path)]
+            self.memo_step('pakpack-' + name, [a for a in args if not isinstance(a, Path)], ['pakpack.c'],
+                           [stage / f'{name}-loose.txt', stage / f'{name}-order.txt', *bases, *sources], [archives[-1]], pack)
 
         # SD folder: the three packs and the 3DSX.
         sd = out / 'sd/3ds/MKWiiDS'
@@ -1025,7 +1137,10 @@ class Builder:
         shutil.copy2(listing[BUILT_3DSX], sd / GAME_3DSX)
         manifest = {name: {'storage': 'packed', 'archive': archive} for name, archive in packed.items()}
         for name in ('menu.pak', 'race.pak', 'stream.pak', GAME_3DSX):
-            manifest[name] = {'storage': 'loose', 'bytes': (sd / name).stat().st_size, 'sha256': digest(sd / name)}
+            manifest[name] = {'storage': 'loose', 'bytes': (sd / name).stat().st_size, 'sha256': self.memo_hash(sd / name)}
+        if self.hash_cache_changed:
+            write_json(self.work / 'package/hash-cache.json', self.hash_cache)
+            self.hash_cache_changed = False
         write_json(out / 'sd-manifest.json', dict(sorted(manifest.items())))
         self.py('slim-check', 'slim_sd_models.py', sd)
         report = (self.logs / 'slim-check.log').read_text()
@@ -1244,6 +1359,9 @@ class Builder:
         add('menu-fit', self.fit_menu, R('build/host-tools/sprite-scales.json', 'sd-card/3ds/mkw-3ds/models/menu-texture-fit.json'),
             files=self.MENU_SCALE_SOURCES)
         add('banner', self.banner, [self.banner_work / 'production/home-banner.bnr', self.banner_work / 'production/icon.icn'])
+        # Course archives for the race pack without the models cooked from them
+        # (late in the chain: a change here reruns only the package).
+        tool('course-runtime', ['course_runtime_archive.py'], 'build/course-runtime/receipt.json')
         # Always rerun: both are incremental and pick up source changes.
         add('compile', self.compile, None)
         add('package', self.package, None, files=['tools/pak-order/*.txt'])
@@ -1329,7 +1447,8 @@ class Builder:
         'award-scenes': ['award-inputs'], 'award-cameras': ['award-scenes'], 'award-drive': ['award-inputs'],
         'award-lighting': ['award-inputs'], 'award-models': ['award-scenes', 'portraits'], 'award-effects': ['award-inputs', 'effects'],
         'staff-camera': ['award-inputs'], 'staff-crowd': ['award-inputs'], 'staff-ui': ['race-items'],
-        'maps': ['courses', 'lighting'], 'map-objects': ['objects', 'coconut', 'lighting'], 'runtime-audio': ['audio', 'menu-models'],
+        # maps: the course maps also draw the water objects (race_map_bake WATER_OBJECTS).
+        'maps': ['courses', 'lighting', 'objects'], 'map-objects': ['objects', 'coconut', 'lighting'], 'runtime-audio': ['audio', 'menu-models'],
         'menu-ui': ['courses', 'garage', 'race-items'], 'map-ui': ['maps', 'menu-ui'], 'menu-footer': ['menu-ui'],
         'race-standings': ['maps', 'map-ui', 'menu-ui', 'race-items'], 'flyover-info': ['courses', 'race-flow'],
         'menu-styles': ['menu-ui'], 'menu-record-text': ['menu-ui', 'race-items'], 'cup-icons': ['race-items'],
@@ -1337,7 +1456,7 @@ class Builder:
         'mii-finish': ['mii-racers'], 'mii-awards': ['award-inputs', 'award-models', 'mii-finish'],
         'driver-effects': ['garage'], 'vehicle-shadows': ['garage'], 'team-vehicles': ['garage'], 'driver-lod': ['garage'],
         'vehicle-lod': ['garage', 'driver-lod'], 'water-mipmaps': ['objects'], 'world-mipmaps': ['courses', 'objects'],
-        'drift-bike': ['drift'],
+        'drift-bike': ['drift'], 'course-runtime': ['courses'],
         'menu-fit': ['menu-ui', 'garage', 'battle-menu', 'menu-animation', 'menu-footer', 'menu-styles', 'menu-record-text',
                      'cup-icons', 'movie-header', 'menu-chapters'],
     }
@@ -1345,7 +1464,8 @@ class Builder:
     DATA_ONLY = {'objects', 'battle-screens', 'battle-balloons', 'battle-coins', 'battle-objects', 'balloon-effects', 'coin-effects',
                  'coin-hud', 'blooper', 'lens-flare', 'luma', 'coconut', 'firebar', 'native-resource', 'award-inputs', 'award-scenes',
                  'award-effects', 'maps', 'menu-movies', 'staff-movies', 'mii-racers', 'item-shadows', 'driver-effects', 'vehicle-shadows',
-                 'team-vehicles', 'driver-lod', 'vehicle-lod', 'water-mipmaps', 'world-mipmaps', 'battle-feedback', 'drift', 'drift-bike'}
+                 'team-vehicles', 'driver-lod', 'vehicle-lod', 'water-mipmaps', 'world-mipmaps', 'battle-feedback', 'drift', 'drift-bike',
+                 'course-runtime'}
     # Stages that run a pool of --jobs workers; the rest use about one core.
     POOLED = {'courses', 'garage', 'objects', 'award-models', 'maps', 'menu-models', 'menu-ui', 'menu-movies', 'staff-movies', 'mii-racers',
               'mii-finish', 'driver-effects', 'vehicle-shadows', 'team-vehicles', 'vehicle-lod', 'world-mipmaps', 'menu-fit', 'compile'}

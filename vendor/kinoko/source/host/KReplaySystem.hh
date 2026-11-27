@@ -6,6 +6,9 @@
 
 #include <game/system/RaceConfig.hh>
 
+#include <array>
+#include <string>
+
 namespace Kinoko {
 
 /// @brief Kinoko system designed to execute replays.
@@ -48,6 +51,13 @@ private:
     const System::GhostFile *m_currentGhost;
     const u8 *m_currentRawGhost;
     size_t m_currentRawGhostSize;
+
+    // Multi-ghost replays (KINOKO_EXTRA_GHOSTS="a.rkg,b.rkg,c.rkg"): up to three more
+    // ghosts on ghost streams 1-3 as players 1-3, each checked against its own file.
+    std::array<u8 *, 3> m_extraRaw{};
+    std::array<System::GhostFile *, 3> m_extraGhost{};
+    std::array<std::string, 3> m_extraName{};
+    size_t m_extraCount = 0;
 };
 
 } // namespace Kinoko

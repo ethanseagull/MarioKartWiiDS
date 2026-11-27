@@ -15,6 +15,7 @@
 #include "mkw/math.hpp"
 #include "mkw/effects.hpp"
 #include "mkw/visibility.hpp"
+#include "mkw/course_weld.hpp"
 #include "mkw/job_worker.hpp"
 #include "mkw/render_metrics.hpp"
 #include "mkw/course_bloom.hpp"
@@ -45,6 +46,30 @@ struct Vertex { Vec3 position,normal; float uv[2],uv1[2]; uint8_t color[4]; };
 static_assert(sizeof(Vertex)==44,"GMDL vertex stride");
 static_assert(offsetof(Vertex,normal)==12 && offsetof(Vertex,uv)==24 &&
               offsetof(Vertex,uv1)==32 && offsetof(Vertex,color)==40,"PICA attributes consume the entire vertex record");
+// Packed course parts (Model::packCourse): the record without the normal no
+// draw of the part reads (32 bytes; loaders v0, v2, v3), and that with s16
+// positions on a grid (28 bytes; loaders v2, v0, v3, the grid folded into the
+// model-view matrix). Full is the GMDL record above.
+enum class VertexFormat : uint8_t { Full=0, NoNormal=1, ShortPosition=2 };
+struct NoNormalVertex { Vec3 position; float uv[2],uv1[2]; uint8_t color[4]; };
+static_assert(sizeof(NoNormalVertex)==32&&offsetof(NoNormalVertex,uv)==12&&offsetof(NoNormalVertex,color)==28,"no-normal vertex layout");
+struct ShortVertex { float uv[2],uv1[2]; int16_t position[3]; uint8_t color[4]; uint8_t pad[2]; };
+static_assert(sizeof(ShortVertex)==28&&offsetof(ShortVertex,position)==16&&offsetof(ShortVertex,color)==22,"short vertex layout");
+inline unsigned vertexStride(VertexFormat f){return f==VertexFormat::Full?sizeof(Vertex):f==VertexFormat::NoNormal?sizeof(NoNormalVertex):sizeof(ShortVertex);}
+// CPU reads of a vertex buffer's positions in any format (culling, VRAM
+// ranking, DIAG counts): position i, dequantized for ShortPosition. split: the
+// first `split` records are the GMDL record (a NoNormal part with lit
+// submeshes, Model::fullVertices), record i >= split sits at
+// base + split*12 + i*32, right after them.
+struct VertexPositions {
+    const uint8_t* base=nullptr;VertexFormat format=VertexFormat::Full;float scale[3]{1,1,1},offset[3]{};uint32_t split=0;
+    Vec3 operator[](uint32_t i) const {
+        if(format==VertexFormat::ShortPosition){const auto& v=reinterpret_cast<const ShortVertex*>(base)[i];
+            return {offset[0]+scale[0]*float(v.position[0]),offset[1]+scale[1]*float(v.position[1]),offset[2]+scale[2]*float(v.position[2])};}
+        const size_t at=i<split?size_t(i)*sizeof(Vertex):size_t(split)*(sizeof(Vertex)-vertexStride(format))+size_t(i)*vertexStride(format);
+        Vec3 p;std::memcpy(&p,base+at,sizeof p);return p;
+    }
+};
 struct Submesh { uint32_t first,count; int32_t texture; uint32_t flags; int32_t secondary; uint32_t constant; float uvVelocity[4]; uint32_t animationFrames;
     // GMDL v4 only (zero in v3): retail course lighting word, material
     // ambient register and the constant the light-texture albedo stage adds
@@ -234,6 +259,45 @@ public:
     // spatial: order-safe submeshes' region copies are Morton-sorted too
     // (Renderer::spatialCourse), so their culling blocks are compact.
     bool enableCastleRegions(bool spatial=false);
+    // Course and sky parts (mkw/course_weld.hpp): vertices of baked-colour,
+    // environment-free submeshes that agree in everything the draw reads
+    // become one; every index list is remapped in place, same triangles in
+    // the same order. After the load, enableStaticCulling, enableCacheOrder
+    // and enableCastleRegions (whose cooked files and hashes match the
+    // authored indices).
+    courseWeld::Stats weldCourse();
+    // The vertex shader reads no normal for this submesh (the weld's rule:
+    // baked or unlit colour, no environment mapping, no light texture).
+    bool submeshNormalFree(const Submesh& s) const;
+    // After weldCourse (main.cpp loadSceneryMeshes: New 3DS no-normal and
+    // compact parts, the Old 3DS profile's item 10): the vertex buffer rewritten into a smaller
+    // LINEAR block. compact: only vertices an index list uses (the weld's
+    // merged-away ones go), in their order, every index list renumbered.
+    // dropNormals: a part whose every submesh is normal-free stores NoNormal
+    // records. grid (scale[3], offset[3]): such a part stores ShortPosition
+    // records on that grid instead, and its culling bounds grow by half a
+    // grid step. Exact without a grid.
+    // perSubmesh (with dropNormals): a part that also has lit submeshes
+    // stores the vertices those draw as GMDL records first (fullVertices of
+    // them; fullSubmesh[k] marks the submeshes that draw them) and every
+    // vertex a normal-free submesh draws as a NoNormal record after them; a
+    // vertex both use is stored twice, and each index list position names the
+    // copy of its submesh. Such a part keeps float positions (no grid). Exact.
+    VertexFormat vertexFormat=VertexFormat::Full;
+    float positionScale[3]{1,1,1},positionOffset[3]{};
+    uint32_t fullVertices=0;
+    std::vector<uint8_t> fullSubmesh;
+    // kept: vertices the lists use (compact) or all; full, shared: the split
+    // part's GMDL records and the vertices stored twice; bytes: buffer after.
+    struct PackStats {uint32_t before=0,after=0,kept=0,full=0,shared=0,bytes=0;unsigned litSubmeshes=0;VertexFormat format=VertexFormat::Full;bool done=false;};
+    PackStats packCourse(bool compact,bool dropNormals,const float* grid,bool perSubmesh);
+    // Positions of `buffer` (this model's own vertices: its format; other
+    // buffers, posed copies: the GMDL record).
+    VertexPositions positions(const Vertex* buffer=nullptr) const {
+        VertexPositions p;p.base=reinterpret_cast<const uint8_t*>(buffer?buffer:vertices);
+        if(!buffer||buffer==vertices){p.format=vertexFormat;p.split=fullVertices;for(unsigned k=0;k<3;++k){p.scale[k]=positionScale[k];p.offset[k]=positionOffset[k];}}
+        return p;
+    }
     std::vector<std::vector<SkinVisibilityBlock>> skinVisibility;
     void enableSkinCulling(unsigned bones);
     bool fixedLighting=false,staticLightingBaked=false;
@@ -277,6 +341,13 @@ public:
     struct FacingPlanes {uint32_t submesh;float radius;std::vector<std::array<float,4>> planes;};
     std::vector<FacingPlanes> facing;
     void buildFacingCull(unsigned submesh);
+    // Course parts (Renderer::courseFacing): per triangle slot (index offset / 3) of the
+    // index list each submesh draws from (coursePlaneLists[submesh]; nullptr: none, e.g.
+    // two-sided), its plane minors over |normal| and its first vertex's radius
+    // (renderer.cpp drawNow). Built once the vertices and index orders are final.
+    std::vector<std::array<float,5>> coursePlanes;
+    std::vector<const uint16_t*> coursePlaneLists;
+    size_t buildCourseFacing(bool spatialCourse);
     // Renderer::stateCache: each submesh's combiners after its first setup
     // (render thread only; allocated at its first cacheable draw, never copied).
     mutable std::unique_ptr<SubmeshState[]> stateBlocks;
@@ -533,9 +604,14 @@ public:
     void setSliderOverride(float slider){sliderOverride_=slider;}
     // Whether the next begin() draws both eyes: a 3D screen with the slider
     // (or its QA override) on at the last frame's read (sampleSlider).
-    // 800px Mode on: the slider never turns 3D on (user, Nov 13: switching
-    // looked bad), so no 3D-only reductions either.
-    bool stereoWanted() const {return targetRight_&&sliderOn_&&!(wideTarget_&&wideSetting);}
+    // 800px Mode on: the slider still turns 3D on (slider up draws 3D at 400px per eye,
+    // slider down 800px; beginStereo). sliderOverrides800 false (DIAG no-slider-3d.txt)
+    // restores the earlier rule: 800px ignores the slider, so no 3D-only reductions either.
+    bool sliderOverrides800=true;
+    // DIAG stereo-slider-cycle.txt (seconds): the slider reads 0 and 0.6 in turn, so a run
+    // crosses the 800px <-> 3D switch again and again (Azahar has no slider to move).
+    float sliderCycle=0;
+    bool stereoWanted() const {return targetRight_&&sliderOn_&&!(wideTarget_&&wideSetting&&!sliderOverrides800);}
     Vec3 cameraBackward() const { return {mainView_.r[2].x,mainView_.r[2].y,mainView_.r[2].z}; }
     // World point -> top-screen pixels with the active camera; viewZ < 0 is in front.
     bool projectTop(Vec3 world,float& x,float& y,float& viewZ) const;
@@ -810,6 +886,13 @@ public:
     // DIAG (render thread): such draws, their triangles kept and in total,
     // draws that went unculled for want of buffer room, and lists computed.
     unsigned long facingDraws=0,facingKept=0,facingTotal=0,facingFull=0,facingBuilt=0;
+    // Course parts with Model::coursePlanes draw each culled range from a per-frame
+    // index list without the triangles their cull mode removes (same pixels, less
+    // vertex and setup work). New 3DS only; off: no-course-facing.txt. DIAG (render
+    // thread): ranges filtered, triangles kept and in total, ranges drawn whole for
+    // want of room.
+    bool courseFacing=false;
+    unsigned long courseFacingDraws=0,courseFacingKept=0,courseFacingTotal=0,courseFacingFull=0;
     // DIAG (render thread): ticks spent in the course pass's model draws
     // (first eye of frames with pass markers) and the frames that drew any.
     uint64_t courseDrawTicks=0;unsigned long courseDrawFrames=0;
@@ -921,6 +1004,11 @@ private:
     static constexpr unsigned kFacingIndices=16384;
     uint16_t *facingIndices_=nullptr,*facingIndicesAlt_=nullptr;
     unsigned facingUsed_=0,facingFlushed_=0;
+    // courseFacing: this frame's course lists (two buffers when pipelined), flushed at
+    // the end of each drawNow (an in-frame split may run its draws before the frame ends).
+    static constexpr unsigned kCourseFacingIndices=196608;
+    uint16_t *courseFacingIndices_=nullptr,*courseFacingIndicesAlt_=nullptr;
+    unsigned courseFacingUsed_=0,courseFacingFlushed_=0;
     GPU_CULLMODE drawCull_=GPU_CULL_NONE;bool drawCullSet_=false;
     struct FacingList {const Model* model=nullptr;unsigned submesh=0;GPU_CULLMODE cull=GPU_CULL_NONE;C3D_Mtx clip;const uint16_t* indices=nullptr;unsigned count=0;};
     FacingList facingLists_[2]{};unsigned facingNext_=0;
@@ -1099,11 +1187,14 @@ private:
 public:
     bool wideSetting=false;
     bool wideCapable() const {return wideTarget_!=nullptr;}
-    // CRT look, 800px frames only (test): scanlines and a vignette multiplied
-    // over the finished top screen (HUD included) in one blended draw.
-    // Factors are per physical row: bright rows x bright, the rows between x
-    // dark; vignette is the corners' darkening. Read from crt.txt at startup.
-    struct CrtLook {bool file=false,on=false;float bright=1.12f,dark=0.72f,vignette=0.30f;};
+    // CRT look: scanlines and a vignette multiplied over the finished top
+    // screen (HUD included) in one blended draw, 400px and 800px frames alike
+    // (240 rows either way; 3D draws it once per eye), and over the lower screen.
+    // Factors are per physical row: bright rows x bright, the dark row of each
+    // period x dark (period 2: every other row; 3: two bright rows, one dark);
+    // vignette is the corners' darkening. Read from crt.txt at startup.
+    // Defaults: the softer lines (was 1.12 / 0.72).
+    struct CrtLook {bool file=false,on=false;float bright=1.06f,dark=0.86f,vignette=0.30f;unsigned period=2;};
     CrtLook crt;
 private:
     void crtNow();

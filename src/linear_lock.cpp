@@ -1,5 +1,8 @@
 #include <3ds.h>
 #include <cstddef>
+#ifndef MKW_RELEASE
+#include <atomic>
+#endif
 #include "mkw/extra_memory.hpp"
 
 // libctru's LINEAR heap allocator is not thread-safe. The menu asset loader
@@ -29,9 +32,22 @@ void* keepLinearUsable(void* p){
  return p;
 }
 }
+#ifndef MKW_RELEASE
+// DIAG track-cost.txt (mkw/diag_cost.hpp): allocations that returned null.
+namespace mkw::diag {std::atomic<unsigned> linearAllocFails{0},vramAllocFails{0},linearAllocFailMax{0};}
+namespace {
+void* noteLinear(void* p,size_t size){
+ if(!p&&size){mkw::diag::linearAllocFails.fetch_add(1,std::memory_order_relaxed);
+  if(size>mkw::diag::linearAllocFailMax.load(std::memory_order_relaxed))mkw::diag::linearAllocFailMax.store(unsigned(size),std::memory_order_relaxed);}
+ return p;
+}
+}
+#else
+#define noteLinear(p,size) (p)
+#endif
 extern "C" {
-void* __wrap_linearAlloc(size_t size){Guard g;return keepLinearUsable(__real_linearAlloc(size));}
-void* __wrap_linearMemAlign(size_t size,size_t alignment){Guard g;return keepLinearUsable(__real_linearMemAlign(size,alignment));}
+void* __wrap_linearAlloc(size_t size){Guard g;return noteLinear(keepLinearUsable(__real_linearAlloc(size)),size);}
+void* __wrap_linearMemAlign(size_t size,size_t alignment){Guard g;return noteLinear(keepLinearUsable(__real_linearMemAlign(size,alignment)),size);}
 void* __wrap_linearRealloc(void* mem,size_t size){Guard g;return __real_linearRealloc(mem,size);}
 // Extra-memory textures (mkw/extra_memory.hpp) are freed here too: citro3d
 // frees every non-VRAM texture with linearFree.
@@ -192,6 +208,15 @@ FILE* __wrap_fopen(const char* path,const char* mode){
  const u64 start=svcGetSystemTick();FILE* file=nullptr;
  if(mkw::diag::deferring.load(std::memory_order_relaxed)&&path&&mode&&mode[0]=='a'&&
     !std::strncmp(path,"sdmc:/3ds/MKWiiDS/",18)&&std::strncmp(path+18,"perf-",5))file=mkw::diag::deferredOpen(path);
+#ifndef MKW_RELEASE
+ // DIAG loose-courses.txt: course archives open from the SD's own Race/Course/
+ // first (checks a course archive cook without new packs).
+ if(!file&&path&&mode&&mode[0]=='r'&&!std::strncmp(path,"Race/Course/",12)){
+  static int loose=-1;
+  if(loose<0){FILE* f=__real_fopen("sdmc:/3ds/MKWiiDS/loose-courses.txt","r");loose=f!=nullptr;if(f)std::fclose(f);}
+  if(loose)file=__real_fopen(path,mode);
+ }
+#endif
  // Game files (relative paths, read-only) come from the packs first; a file
  // no pack holds is opened loose, as are older SD folders' files.
  if(!file&&path&&mode&&mode[0]=='r'&&!std::strchr(mode,'+')&&!std::strchr(path,':'))file=mkw::pack::openFile(path);
@@ -252,7 +277,7 @@ void refusedLastBlock(){log("VRAM exactly full: refusing the last free block (ne
 void allocated(void* p,size_t size,void* caller){
  RecursiveLock_Lock(&tableLock);
  noteThread("allocation",caller);
- if(!p){log("VRAM allocation of %lu bytes failed (caller %08lx)",(unsigned long)size,(unsigned long)uintptr_t(caller));RecursiveLock_Unlock(&tableLock);return;}
+ if(!p){mkw::diag::vramAllocFails.fetch_add(1,std::memory_order_relaxed);log("VRAM allocation of %lu bytes failed (caller %08lx)",(unsigned long)size,(unsigned long)uintptr_t(caller));RecursiveLock_Unlock(&tableLock);return;}
  const uintptr_t at=uintptr_t(p);
  for(unsigned i=0;i<blockCount;++i){
   const Block& b=blocks[i];

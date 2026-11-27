@@ -124,14 +124,14 @@ def fly_coverage(size, r0, r1, ss=4):
     return out / (ss * ss)
 
 
-def fly_ring():
-    """The medallion's ring (generated, 40 px): gold with a radial bevel and one bright arc at the top
-    (the box turns it once a border loop), a dark outline, a near-opaque dark plate inside for the
-    emblem."""
+def fly_ring(size=FLY_RING):
+    """The medallion's ring (generated, 40 px; the race loading screen draws it larger): gold with a
+    radial bevel and one bright arc at the top (the box turns it once a border loop), a dark outline, a
+    near-opaque dark plate inside for the emblem."""
     import math
     import numpy as np
     from PIL import Image
-    s, k = FLY_RING, FLY_RING / 36
+    s, k = size, size / 36
     y, x = np.mgrid[0:s, 0:s] + .5
     r, angle = np.hypot(x - s / 2, y - s / 2), np.arctan2(y - s / 2, x - s / 2)
     outer, ring, plate = fly_coverage(s, 0, 17.6 * k), fly_coverage(s, 13.2 * k, 17.0 * k), fly_coverage(s, 0, 13.2 * k)

@@ -209,10 +209,10 @@ void MenuState::toggleSetting(unsigned row){
  case 0:settings.textureQuality=settings.textureQuality?0:1;break;
  case 1:settings.bloom=!settings.bloom;break;
  case 2:settings.opponentDetail=settings.opponentDetail?0:1;break;
- // The CRT look needs 800px: 800px Mode Off turns it off, CRT On turns 800px on.
- case 3:settings.wide800=!settings.wide800;if(!settings.wide800)settings.crt=false;break;
+ // 800px Mode and the CRT look are independent (CRT works at 400px too).
+ case 3:settings.wide800=!settings.wide800;break;
  case 4:settings.minimap60=!settings.minimap60;break;
- case 5:settings.crt=!settings.crt;if(settings.crt)settings.wide800=true;break;
+ case 5:settings.crt=!settings.crt;break;
  default:break;
  }
 }
@@ -318,6 +318,11 @@ UiAction MenuState::input(UiInput key){
   default:break;
   }
   return UiAction::None;
+ }
+ // X on a ghost's row marks it to race beside the chosen ghost (or to watch beside it).
+ if(key.mark&&page==UiPage::Ghost){
+  if(cursor>=3||!choiceVisible(cursor))return UiAction::None;
+  ghostMarks^=1u<<cursor;focusAge=0;return UiAction::None;
  }
  // Y on a ghost's row watches its replay; A races it.
  if(key.switchType&&page==UiPage::Ghost){
@@ -467,7 +472,7 @@ UiAction MenuState::input(UiInput key){
   // A Grand Prix selects the whole cup. VS and Time Trials select a course.
   if(selection.course/4!=cursor||selection.mode==UiMode::GrandPrix)selection.course=cursor*4;
   enter(selection.mode==UiMode::GrandPrix?UiPage::Confirm:UiPage::Course);break;
- case UiPage::Course:selection.course=selection.course/4*4+cursor;enter(selection.mode==UiMode::TimeTrials?UiPage::Ghost:UiPage::Confirm);break;
+ case UiPage::Course:selection.course=selection.course/4*4+cursor;ghostMarks=0;enter(selection.mode==UiMode::TimeTrials?UiPage::Ghost:UiPage::Confirm);break;
  case UiPage::Ghost:if(!choiceVisible(cursor)){unavailable=true;break;}
   ghostChoice=cursor==0?1:cursor==1?2:cursor==2?3:0;watchGhost=false;enter(UiPage::Confirm);break;
  case UiPage::BattleCup:

@@ -25,8 +25,9 @@ struct UiSettings {
  bool wide800=true;
  // Minimap: the race's lower screen redraws at 60fps (every frame) instead of
  // 30fps (every other frame, RenderQuality::bottomInterval). New 3DS only.
- bool minimap60=false;
- // CRT look: scanlines and a vignette on both screens in 800px frames
+ // 60fps in every preset; 30fps only by choice in Custom.
+ bool minimap60=true;
+ // CRT look: scanlines and a vignette on both screens, 400px or 800px
  // (Renderer::crtNow). Byte 14 (files from before it hold 0: Off).
  bool crt=false;
  // The race lower screen's last view (the Standings view, RaceBottomScreen): it opens the next race
@@ -43,7 +44,7 @@ inline UiSettings settingsPreset(unsigned i){
  switch(i){
  case 0:s.textureQuality=1;s.opponentDetail=1;s.wide800=false;break; // 400px, light textures and opponents
  case 1:s.bloom=true;break;                                           // 800px with the Wii's bloom
- case 2:s.crt=true;break;                                             // 800px with the CRT look
+ case 2:s.crt=true;s.wide800=false;break;                            // the CRT look at 400px (Nov 27: Retro has 800px Off)
  default:break;                                                       // Fidelity: 800px, High, Full (the defaults)
  }
  return s;
@@ -56,7 +57,7 @@ inline unsigned settingsPresetOf(const UiSettings& s){
 // Old 3DS (268 MHz, one core, 43 MB heap): every option stays at its light
 // value (MenuState::old3dsSettings refuses to switch them). Bloom too: its ~20
 // blur passes cost about 1 ms of CPU a frame there (user, Nov 6).
-inline void lockOld3dsSettings(UiSettings& s){s.textureQuality=1;s.bloom=false;s.opponentDetail=1;s.wide800=false;s.minimap60=false;s.crt=false;}
+inline void lockOld3dsSettings(UiSettings& s){s.textureQuality=1;s.bloom=false;s.opponentDetail=1;s.wide800=false;s.minimap60=true;s.crt=false;}
 namespace settings_file {
 inline std::uint32_t crc(const unsigned char* b,unsigned n){
  std::uint32_t c=~0u;
@@ -73,6 +74,8 @@ inline bool read(const char* path,UiSettings& out){
  if(!end||!(v1||v2)||b[8]>1||b[9]>1||b[10]>1||b[11]>1||(v2&&(b[12]>1||b[13]>1||b[14]>1))||stored!=crc(b.data(),at))return false;
  out.textureQuality=b[8];out.bloom=b[10];out.opponentDetail=b[11];out.wide800=v2?b[12]!=0:UiSettings{}.wide800;out.minimap60=v2&&b[13];out.crt=v2&&b[14];
  out.standingsView=v2&&b[15]==1;
+ // Files from when the presets kept the minimap at 30fps: a preset's values with 30fps are that preset now.
+ if(!out.minimap60){UiSettings t=out;t.minimap60=true;if(settingsPresetOf(t)<SettingsPresetCount)out.minimap60=true;}
  return true;
 }
 }

@@ -5,6 +5,10 @@
 #include <egg/math/BoundBox.hh>
 #include <egg/math/Matrix.hh>
 
+#ifndef MKW_RELEASE
+#include <atomic>
+#endif
+
 // Credit: em-eight/mkw
 // Credit: stblr/Hanachan
 
@@ -68,6 +72,10 @@ struct CollisionInfo {
 /// @nosubgrouping
 class KColData {
 public:
+#ifndef MKW_RELEASE
+    /// mkw-3ds DIAG (track-cost.txt): prism collision tests so far, all threads.
+    static inline std::atomic<u32> s_prismTests{0};
+#endif
     enum class CollisionCheckType {
         Edge,
         Plane,

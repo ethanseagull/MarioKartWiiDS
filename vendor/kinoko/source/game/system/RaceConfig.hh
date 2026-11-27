@@ -77,7 +77,7 @@ public:
     void init();
     void initRace();
     void initControllers();
-    void initGhost(size_t index = 0);
+    void initGhost(size_t index = 0, size_t slot = 0);
 
     [[nodiscard]] const Scenario &raceScenario() const {
         return m_raceScenario;
@@ -90,6 +90,11 @@ public:
     void setGhost(const u8 *rkg) {
         m_ghost = rkg;
     }
+
+    /// Multi-ghost Time Trials (up to four ghost streams, as retail Racedata's four RKG
+    /// buffers): the file of ghost stream `slot` (0-3); slot 0 is the one-argument
+    /// setGhost's. Ghost players take the streams in player order.
+    void setGhost(const u8 *rkg, size_t slot);
 
     // A scene-owned configuration is consumed by the next initRace only.
     // Keep the frontend's registered callback intact for subsequent races.
@@ -119,6 +124,7 @@ private:
     Scenario m_raceScenario;
     bool m_explicitNextScenario = false;
     RawGhostFile m_ghost;
+    std::array<RawGhostFile *, 3> m_extraGhosts{}; ///< Streams 1-3, made on first use.
 
     static RaceConfig *s_instance; ///< @addr{0x809BD728}
     static InitCallback s_onInitCallback;

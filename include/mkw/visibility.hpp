@@ -66,7 +66,8 @@ public:
   }
   return mask;
  }
- bool intersects(const Bounds& b,unsigned mask=AllPlanes)const{
+ // slack: the outward tolerance per summed plane term (fine children use more).
+ bool intersects(const Bounds& b,unsigned mask=AllPlanes,float slack=1e-5f)const{
   for(unsigned i=0;i<6;++i){
    if(!(mask&(1u<<i)))continue;
    const auto& p=planes_[i];
@@ -75,7 +76,7 @@ public:
    const float z=p[2]*(p[2]>=0?b.maximum.z:b.minimum.z);
    // Outward numerical slack, also at far-plane cancellation. Nonfinite
    // comparisons retain geometry rather than hiding uncertain bounds.
-   const float tolerance=1e-5f*(std::fabs(x)+std::fabs(y)+std::fabs(z)+std::fabs(p[3])+1.f);
+   const float tolerance=slack*(std::fabs(x)+std::fabs(y)+std::fabs(z)+std::fabs(p[3])+1.f);
    if(x+y+z+p[3]<-tolerance)return false;
   }
   return true;
@@ -107,7 +108,9 @@ public:
 };
 struct IndexRange {uint32_t first=0,count=0;};
 struct VisibilityBlock {Bounds bounds;IndexRange indices;};
-struct SubmeshVisibility {Bounds bounds;std::vector<VisibilityBlock> blocks;};
+// children: optional bounds of each block's consecutive childTriangles-triangle
+// runs, in index order (block k's first child is k*(blockTriangles/childTriangles)).
+struct SubmeshVisibility {Bounds bounds;std::vector<VisibilityBlock> blocks;std::vector<Bounds> children;uint16_t blockTriangles=0,childTriangles=0;};
 // Static index order is preserved, including transparent triangles and decals.
 // Only contiguous invisible runs may be omitted; no asset reduction/reordering.
 template<class Vertex> SubmeshVisibility buildVisibility(const Vertex* vertices,const uint16_t* indices,uint32_t first,uint32_t count,unsigned blockTriangles=128){
@@ -121,7 +124,28 @@ template<class Vertex> SubmeshVisibility buildVisibility(const Vertex* vertices,
   for(unsigned i=at;i<at+b.indices.count;++i)b.bounds.include(vertices[indices[i]].position);
   out.bounds.include(b.bounds.minimum);out.bounds.include(b.bounds.maximum);out.blocks.push_back(b);
  }
+ out.blockTriangles=uint16_t(std::max(1u,blockTriangles));
  return out;
+}
+// Child bounds for mesh's blocks over `indices` (the order the blocks are drawn
+// in; the same triangles per block as when the blocks were built). child must
+// divide the block size; anything else leaves the mesh without children.
+template<class Vertex> void buildChildren(const Vertex* vertices,const uint16_t* indices,SubmeshVisibility& mesh,unsigned child){
+ mesh.children.clear();mesh.childTriangles=0;
+ if(!child||!mesh.blockTriangles||mesh.blockTriangles%child||mesh.blockTriangles==child||mesh.blocks.empty())return;
+ const unsigned per=mesh.blockTriangles/child;
+ mesh.children.reserve(mesh.blocks.size()*per);
+ for(const auto& b:mesh.blocks){
+  const uint32_t end=b.indices.first+b.indices.count;unsigned made=0;
+  for(uint32_t at=b.indices.first;at<end;at+=child*3,++made){
+   Bounds c{vertices[indices[at]].position,vertices[indices[at]].position};
+   for(uint32_t i=at;i<std::min<uint32_t>(end,at+child*3);++i)c.include(vertices[indices[i]].position);
+   mesh.children.push_back(c);
+  }
+  // A short last block has fewer children: pad so block k's children stay at k*per.
+  for(;made<per;++made)mesh.children.push_back(mesh.children.back());
+ }
+ mesh.childTriangles=uint16_t(child);
 }
 // Shadow-only immutable index copy. Spatially adjacent triangles share bounds
 // and draw runs even when the authored material strip visits distant regions.
@@ -146,11 +170,12 @@ template<class Vertex> void spatialShadowIndices(const Vertex* vertices,const ui
 struct VisibleRanges {
  // Bound extra draw overhead. Merging a gap only submits extra invisible
  // triangles; all visible triangles keep their exact original order.
- static constexpr unsigned Capacity=4;
- std::array<IndexRange,Capacity+1> ranges{};unsigned count=0;
+ // limit: Capacity, or up to MaxCapacity for the fine selection.
+ static constexpr unsigned Capacity=4,MaxCapacity=16;
+ std::array<IndexRange,MaxCapacity+1> ranges{};unsigned count=0,limit=Capacity;
  void append(IndexRange r){
   if(count&&ranges[count-1].first+ranges[count-1].count==r.first){ranges[count-1].count+=r.count;return;}
-  ranges[count++]=r;if(count<=Capacity)return;
+  ranges[count++]=r;if(count<=limit)return;
   unsigned best=0;uint32_t gap=~0u;
   for(unsigned i=0;i+1<count;++i){auto d=ranges[i+1].first-ranges[i].first-ranges[i].count;if(d<gap){gap=d;best=i;}}
   ranges[best].count=ranges[best+1].first+ranges[best+1].count-ranges[best].first;
@@ -184,6 +209,42 @@ inline VisibleRanges selectVisible(const SubmeshVisibility& mesh,const ClipFrust
  if(mask==ClipFrustum::Outside)return out;
  if(!mask){for(const auto& b:mesh.blocks)out.append(b.indices);return out;}
  for(const auto& b:mesh.blocks)if(frustum.intersects(b.bounds,mask))out.append(b.indices);
+ return out;
+}
+// selectVisible with each block's children (mesh.children; none: as
+// selectVisible but up to `limit` ranges): a block wholly inside the planes
+// that matter is taken whole, one outside is skipped, one in between submits
+// the children that may reach the view (tested at childSlack). Every triangle
+// selectVisible submits that can reach the screen is still submitted, in the
+// same order. tests: box tests made (submesh, blocks, children), for counts;
+// blocksPassed: some block passed, i.e. selectVisible would submit something
+// (the caller then still sets the submesh's material up when no child is
+// left, so the GPU state later draws inherit stays as it was).
+struct CullTests {uint32_t submesh=0,blocks=0,children=0;bool blocksPassed=false;};
+inline VisibleRanges selectVisibleFine(const SubmeshVisibility& mesh,const ClipFrustum& frustum,unsigned limit,float childSlack,CullTests& tests){
+ VisibleRanges out;out.limit=std::min(limit,VisibleRanges::MaxCapacity);
+ const unsigned mask=frustum.remainingPlanes(mesh.bounds);++tests.submesh;
+ if(mask==ClipFrustum::Outside)return out;
+ if(!mask){for(const auto& b:mesh.blocks)out.append(b.indices);tests.blocksPassed=!mesh.blocks.empty();return out;}
+ const unsigned child=mesh.childTriangles;
+ if(!child||mesh.children.size()!=mesh.blocks.size()*(mesh.blockTriangles/child)){
+  for(const auto& b:mesh.blocks){++tests.blocks;if(frustum.intersects(b.bounds,mask))out.append(b.indices);}
+  tests.blocksPassed=out.count>0;return out;
+ }
+ const unsigned per=mesh.blockTriangles/child;
+ for(size_t k=0;k<mesh.blocks.size();++k){
+  const auto& b=mesh.blocks[k];++tests.blocks;
+  const unsigned inner=frustum.remainingPlanes(b.bounds);
+  if(inner==ClipFrustum::Outside)continue;
+  tests.blocksPassed=true;
+  if(!(inner&mask)){out.append(b.indices);continue;}
+  const Bounds* c=mesh.children.data()+k*per;
+  const uint32_t end=b.indices.first+b.indices.count;
+  for(uint32_t at=b.indices.first;at<end;at+=child*3,++c){
+   ++tests.children;
+   if(frustum.intersects(*c,inner&mask,childSlack))out.append({at,std::min<uint32_t>(child*3,end-at)});
+  }
+ }
  return out;
 }
 }

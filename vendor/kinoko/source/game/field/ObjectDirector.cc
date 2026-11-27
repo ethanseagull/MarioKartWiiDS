@@ -404,6 +404,9 @@ void ObjectDirector::createObjects() {
 
 /// @addr{0x80821E14}
 ObjectBase *ObjectDirector::createObject(const System::MapdataGeoObj &params) {
+#ifdef KINOKO_QUIET
+    s_lastObject = params.id();
+#endif
     const auto *flow = m_flowTable.set(m_flowTable.slot(static_cast<ObjectId>(params.id())));
     if (flow && (!std::strcmp(flow->name, "truckChimSmk") || !std::strcmp(flow->name, "truckChimSmkW")))
         return EGG::egg_new<ObjectChimney>(params);

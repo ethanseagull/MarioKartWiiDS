@@ -1,5 +1,6 @@
 #include <mkw/award_ui.hpp>
 #include <mkw/award_board_motion.hpp>
+#include <mkw/flow_name_font.hpp>
 #include <mkw/gp_rank.hpp>
 #include <mkw/race_flow_draw.hpp>
 #include <mkw/race_intro_layout.hpp>
@@ -38,6 +39,8 @@ struct AwardUi::Impl {
  bool loaded=false,winner=false,tie=false;
  unsigned congratulationsId=1222;
  Renderer* renderer=nullptr;
+ // The Mii racer's own name (AwardResults::raceMiiName) in its own atlas.
+ static constexpr int NameTexture=100;FlowNameFont nameFont;
  const FlowLayoutDef& rowLayout()const{return winner?FlowAwardItemWinLayout:FlowAwardItemLoseLayout;}
  const FlowControl& rowControl(unsigned i)const{
   const unsigned variant=results.boardSlot(i);
@@ -52,7 +55,7 @@ struct AwardUi::Impl {
  }
  static void submit(const FlowBatch& batch,void* context){
   auto& m=*static_cast<Impl*>(context);
-  auto* t=batch.texture>=0&&unsigned(batch.texture)<m.textures.size()?&m.textures[batch.texture]:nullptr;
+  auto* t=batch.texture==NameTexture?&m.nameFont.texture:batch.texture>=0&&unsigned(batch.texture)<m.textures.size()?&m.textures[batch.texture]:nullptr;
   if(batch.texture>=0&&(!t||!t->ready))return;
   auto wrap=[](unsigned v){return v==1?GPU_REPEAT:v==2?GPU_MIRRORED_REPEAT:GPU_CLAMP_TO_EDGE;};
   static_assert(sizeof(FlowQuad)==sizeof(Renderer::MaterialQuad));
@@ -71,10 +74,12 @@ bool AwardUi::load(){
  for(unsigned i=0;i<m.textures.size();++i)if(!m.textures[i].load(FlowAwardTextures[i])){unload();return false;}
  m.loaded=true;return true;
 }
-void AwardUi::unload(){for(auto& t:impl_->textures)t.reset();impl_->loaded=false;}
+void AwardUi::unload(){for(auto& t:impl_->textures)t.reset();impl_->nameFont.reset();impl_->loaded=false;}
 void AwardUi::configure(const AwardResults& results,bool winner,bool draw){
  auto& m=*impl_;m.results=results;m.winner=winner;m.tie=draw;
  m.board.reset();
+ m.nameFont.reset();
+ if(flowMiiNames&&results.raceMiiName[0])m.nameFont.build(results.raceMiiName.data(),FlowAwardFont,Impl::NameTexture);
  m.congratulations=flowPlay(m.congratulationsLayout(),"Fade","Hide");
  unsigned rank=12;
  for(unsigned i=0;i<results.count;++i)if(results.players[i].human){rank=i+1;break;}
@@ -151,8 +156,10 @@ void AwardUi::draw(Renderer& renderer){
   std::snprintf(points,sizeof points,"%u",player.points);
   std::snprintf(rank,sizeof rank,"%u%s",i+1,i==0?"st":i==1?"nd":i==2?"rd":"th");
   const int iconId=characterIcon(player.character);
+  const bool own=player.human&&player.character>=24&&m.nameFont.ready();
   const FlowAwardBinding bindings[]={{"position",r.teams?"":rank},{"point",points},{"pts",player.points==1?"pt":"pts"},
-   {"mii_name",player.character<FlowCharacterNames.size()?FlowCharacterNames[player.character]:"Mii"},
+   own?FlowAwardBinding{"mii_name",m.nameFont.text(),-2,&m.nameFont.font()}:
+   FlowAwardBinding{"mii_name",player.character<FlowCharacterNames.size()?FlowCharacterNames[player.character]:"Mii"},
    {"chara_icon",nullptr,iconId},{"chara_icon_sha",nullptr,iconId}};
   m.draw(m.rowLayout(),m.boardControl(m.rowControl(i)),
    m.rows[i].data(),m.rows[i].size(),bindings,std::size(bindings));

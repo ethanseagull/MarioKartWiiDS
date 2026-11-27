@@ -222,6 +222,8 @@ src/license_records.cpp
 src/license_save.cpp
 src/license_times.cpp
 src/extra_memory.cpp
+src/flow_name_font.cpp
+src/heap_guard.cpp
 src/linear_lock.cpp
 src/loading_screen.cpp
 src/luma_visual.cpp
@@ -267,6 +269,7 @@ src/race_hud.cpp
 src/race_intro.cpp
 src/race_items.cpp
 src/race_results.cpp
+src/tt_end_ui.cpp
 src/race_sound.cpp
 src/racer_visuals.cpp
 src/render_thread.cpp

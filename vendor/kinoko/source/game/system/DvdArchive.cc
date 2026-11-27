@@ -64,7 +64,10 @@ void DvdArchive::load(const char *path, bool decompress_) {
     }
 
     if (m_state == State::Ripped) {
-        if (decompress_) {
+        // The port's race pack stores course archives as plain U8
+        // (tools/course_runtime_archive.py): used in place, so the arena never
+        // holds the file and its expanded copy at once.
+        if (decompress_ && !isPlainU8()) {
             decompress();
             clearFile();
         } else {
@@ -72,6 +75,11 @@ void DvdArchive::load(const char *path, bool decompress_) {
         }
         mount();
     }
+}
+
+bool DvdArchive::isPlainU8() const {
+    const u8 *p = reinterpret_cast<const u8 *>(m_fileStart);
+    return m_fileSize >= 4 && p[0] == 0x55 && p[1] == 0xAA && p[2] == 0x38 && p[3] == 0x2D;
 }
 
 /// @addr{0x805195D8}

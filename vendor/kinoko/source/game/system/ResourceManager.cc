@@ -13,6 +13,9 @@ static const char *const RESOURCE_PATHS[] = {
 
 /// @addr{0x805411FC}
 void *ResourceManager::getFile(const char *filename, size_t *size, ArchiveId id) {
+#ifdef KINOKO_QUIET
+    snprintf(s_lastFile, sizeof(s_lastFile), "%s", filename);
+#endif
     s32 idx = static_cast<s32>(id);
     return m_archives[idx]->isLoaded() ? m_archives[idx]->getFile(filename, size) : nullptr;
 }

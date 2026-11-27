@@ -426,7 +426,9 @@ def cook_results(out, manifest, header):
     # tt_kart_font_rodan subset only covers 30 capitals.
     kanji_text = ''.join(names + positions + unit + list(labels.values())) + '0123456789+'
     fonts = []
-    for key, font_name, text in (('Kanji', 'kart_kanji_font', kanji_text),):
+    # Time: the board's finish-time view (m:ss.mmm, -:--.--- for no time), a small atlas of its
+    # own after the others (the board's font and the earlier textures stay as they are).
+    for key, font_name, text in (('Kanji', 'kart_kanji_font', kanji_text), ('Time', 'kart_kanji_font', '0123456789:.-')):
         font_path = UI / f'Font/{font_name}.brfnt'
         sources.append(font_path)
         info, glyphs = font_glyphs(font_path, text.replace(' ', '') + ' ')
@@ -534,7 +536,143 @@ def cook_results(out, manifest, header):
             v = source_variants[variant]
             header.append(f'    {{{f(v["x"])},{f(v["y"])},{f(v["sx"])},{f(v["sy"])},{f(v["delay"])}}},')
         header.append('}};')
+    # Time Trial end pages (their own textures, FlowTtTextures).
+    cook_tt_end(out, header, sources, race)
     manifest['results'] = {'textures': textures, 'sources': {str(p.relative_to(ROOT)): digest(p) for p in sources}}
+
+
+def cook_tt_end(out, header, sources, race):
+    """Time Trial end pages: TTSplits (0x2D: CtrlRaceTime rows of game_image_number with the
+    time_number labels, the best lap's flash, the newrecord control) and TTEnd (0x21:
+    AfterMenuTimeAttack buttons). Own textures (FlowTtTextures), loaded only after a Time Trial."""
+    from PIL import Image
+    from menu_layout import pane_nodes
+    game_u, game = UI / 'Race_U/game_image', UI / 'Race/game_image'
+
+    def tpl(*paths):
+        for path in paths:
+            if path and path.is_file():
+                sources.append(path)
+                return decode_tpl(path)
+        raise FileNotFoundError(str(paths[-1]))
+
+    # CtrlRaceTime rows (time_number.brctr): CtrlRaceTime_1 the total, CtrlRaceTimeLapN the laps;
+    # time_number_texture.brlyt holds the TIME and Lap 1..3 labels (every retail course has 3 laps).
+    control = game / 'ctrl/time_number.brctr'
+    texture_layout = game_u / 'blyt/time_number_texture.brlyt'
+    number_layout = game_u / 'blyt/game_image_number.brlyt'
+    best_anim = game_u / 'anim/game_image_number_best_lap.brlan'
+    sources += [control, texture_layout, number_layout, best_anim]
+    variants = controller_variants(control)
+    labels = parse_layout(texture_layout)['textures']  # tt_lap_E_Lap1.., tt_time_E
+    lap_names = sorted((n for n in labels if n.lower().startswith('tt_lap_e_lap')), key=lambda n: int(n[len('tt_lap_E_lap'):-4]))
+    rows = ['CtrlRaceTime_1'] + [f'CtrlRaceTimeLap{i}' for i in range(1, len(lap_names) + 1) if f'CtrlRaceTimeLap{i}' in variants]
+    # Drawn sizes on the top screen (240 / 456 px a layout unit): digit panes 32 units, the total at
+    # scale 1 (16.8 px); labels are set_p's 240x40 at 0.7 (88 x 14.7 px).
+    unit = 240 / 456
+    digit_px = round(32 * unit)
+    images = {}
+    for d in range(10):
+        images[('digit', d)] = tpl(game_u / f'timg/tt_d_number_3d_{d:02d}.tpl', game / f'timg/tt_d_number_3d_{d:02d}.tpl').resize((digit_px, digit_px), Image.LANCZOS)
+    for key, name in (('dot', 'tt_d_number_3d_coron'), ('colon', 'tt_d_number_3d_coron_00')):
+        images[('sep', key)] = tpl(game_u / f'timg/{name}.tpl').resize((digit_px, digit_px), Image.LANCZOS)
+    label_size = (round(240 * .7 * unit), round(40 * .7 * unit))
+    label_names = ['tt_time_E.tpl'] + lap_names[:len(rows) - 1]
+    for i, name in enumerate(label_names):
+        images[('label', i)] = tpl(game_u / f'timg/{name}').resize(label_size, Image.LANCZOS)
+    # NEW RECORD! (newrecord.brctr NewRecord, new_record.brlyt text_00, Race.bmg 0x4bb) in its own font.
+    record_layout = parse_layout(game / 'blyt/new_record.brlyt')
+    record_clips = controller_clips(game / 'ctrl/newrecord.brctr', record_layout, game / 'anim')
+    record_text = race[0x4bb]
+    font_name = next(p['fontName'] for p in record_layout['panes'] if p['name'] == 'text_00')
+    font_path = UI / f'Font/{font_name}'
+    sources += [game / 'blyt/new_record.brlyt', game / 'ctrl/newrecord.brctr', font_path] + sorted({c['source'] for c in record_clips})
+    record_info, record_glyphs = font_glyphs(font_path, record_text.replace(' ', '') + ' ')
+    for c, g in record_glyphs.items():
+        images[('rodan', c)] = g['image']
+    atlas, rects = pack_atlas(images)
+    numbers = texture_file(atlas, 'flow_tt_numbers', out, 'la8')  # grey art: lerp(C0, C1, texture)
+    # The end menu's labels in kart_kanji_font (BMGHolder font 1), an atlas of their own so the
+    # result board's font stays as it is.
+    button_control = UI / 'Race/button/ctrl/AfterMenuTimeAttack.brctr'
+    buttons = controller_variants(button_control)
+    sources.append(button_control)
+    order = ['ButtonRestart', 'ButtonChangeCourse', 'ButtonChangeCharacter', 'ButtonReplay', 'ButtonQuit']
+    texts = [race[buttons[n]['message']] for n in order]
+    kanji_info, kanji = font_glyphs(UI / 'Font/kart_kanji_font.brfnt', ''.join(texts).replace(' ', '') + ' ')
+    kanji_atlas, kanji_rects = pack_atlas({c: g['image'] for c, g in kanji.items()})
+    font = texture_file(kanji_atlas, 'flow_tt_font', out, 'la4')
+
+    panes = {n['name']: n for n in pane_nodes(number_layout)}
+    pane_names = ['race_null', 'time_01', 'coron01', 'time_02', 'time_03', 'coron00', 'time_04', 'time_05', 'time_06', 'set_p']
+    duration, _, best_tracks = brlan(best_anim)
+    best = next(t for t in best_tracks if t['element'] == 'race_null' and t['kind'] == 'RLMC' and t['target'] == 9)
+
+    def rect(key):
+        x, y, w, h = rects[key]
+        return f'{{{x},{y},{w},{h}}}'
+
+    def control_line(v, note):
+        return f'    {{{f(v["x"])},{f(v["y"])},{f(v["sx"])},{f(v["sy"])},{f(v["delay"])}}}, // {note}'
+
+    def pane_values(name):
+        v = panes[name]['values']
+        x, y = (0.0, 0.0) if name == 'race_null' else (v[0], v[1])
+        return '{{' + ','.join(f(a) for a in (x, y, v[8] * v[6], v[9] * v[7])) + '}}'
+
+    def glyph_lines(glyphs, glyph_rects):
+        lines = []
+        for c in sorted(glyphs):
+            x, y, w, _ = glyph_rects[c]
+            g = glyphs[c]
+            code = c if c not in chr(39) + chr(92) else chr(92) + c
+            lines.append(f"    {{u'{code}',{x},{y},{g['width']},{g['left']},{g['advance']}}},")
+        return lines
+
+    header += [
+        '// Time Trial end pages (tools/cook_race_flow.py cook_tt_end). Own textures, loaded after a Time Trial:',
+        '// 0 the CtrlRaceTime art (digits, separators, TIME / Lap n labels, NEW RECORD! glyphs), 1 the',
+        '// end menu labels in kart_kanji_font. Batches use 100 + index.',
+        f'inline constexpr std::array<const char*,2> FlowTtTextures{{{{"{numbers}","{font}"}}}};',
+        'struct FlowTtRect {uint16_t x,y,w,h;};',
+        f'inline constexpr uint16_t FlowTtAtlas[2]={{{atlas.size[0]},{atlas.size[1]}}};',
+        'inline constexpr std::array<FlowTtRect,10> FlowTtDigits{{' + ','.join(rect(('digit', d)) for d in range(10)) + '}};',
+        f'inline constexpr FlowTtRect FlowTtColon{rect(("sep", "colon"))},FlowTtDot{rect(("sep", "dot"))}; // coron_00, coron',
+        f'// Row labels: 0 TIME, n Lap n ({len(label_names) - 1} laps).',
+        f'inline constexpr std::array<FlowTtRect,{len(label_names)}> FlowTtLabels{{{{' + ','.join(rect(('label', i)) for i in range(len(label_names))) + '}};',
+        '// game_image_number.brlyt: race_null, time_01, coron01, time_02, time_03, coron00, time_04..06, set_p:',
+        '// pane centre (layout units, y up) relative to race_null and drawn size (with the pane scale).',
+        'inline constexpr std::array<std::array<float,4>,10> FlowTtNumberPanes{{' + ','.join(pane_values(n) for n in pane_names) + '}};',
+        f'// {control.name}: CtrlRaceTime_1 (the total) and CtrlRaceTimeLap1..{len(rows) - 1} (16:9 placement).',
+        f'inline constexpr std::array<FlowControl,{len(rows)}> FlowTtRows{{{{',
+    ]
+    header += [control_line(variants[name], name) for name in rows]
+    header.append('}};')
+    header += [f'// game_image_number_best_lap.brlan ({duration} frames, loop): C1 green and blue (red stays 255).',
+               'inline constexpr FlowKey FlowTtBestKeys[]={' + ','.join(f'{{{f(k[0])},{f(k[1])},{f(k[2])}}}' for k in best['keys']) + '};',
+               f'inline constexpr float FlowTtBestFrames={f(duration)};']
+    v = controller_variants(game / 'ctrl/newrecord.brctr')['NewRecord']
+    header.append('inline constexpr FlowControl FlowTtRecordPlace' + control_line(v, 'NewRecord').strip()[:-len(', // NewRecord')] + ';')
+    header.append(f'inline constexpr const char* FlowTtRecordText="{record_text}"; // Race.bmg 0x4bb')
+    header.append('inline constexpr FlowGlyph FlowTtRecordGlyphs[]={')
+    header += glyph_lines(record_glyphs, {c: rects[('rodan', c)] for c in record_glyphs})
+    header.append('};')
+    header.append(f'inline constexpr FlowFont FlowTtRecordFont{{100,{atlas.size[0]},{atlas.size[1]},{record_info["cellH"]},{record_info["width"]},'
+                  f'{record_info["height"]},{record_info["linefeed"]},FlowTtRecordGlyphs,{len(record_glyphs)}}}; // {font_name}')
+    header.append('inline constexpr FlowGlyph FlowTtKanjiGlyphs[]={')
+    header += glyph_lines(kanji, kanji_rects)
+    header.append('};')
+    header.append(f'inline constexpr FlowFont FlowTtKanjiFont{{101,{kanji_atlas.size[0]},{kanji_atlas.size[1]},{kanji_info["cellH"]},{kanji_info["width"]},'
+                  f'{kanji_info["height"]},{kanji_info["linefeed"]},FlowTtKanjiGlyphs,{len(kanji)}}}; // kart_kanji_font')
+    header.append('// TTEnd (AfterMenuTimeAttack, retail list 0x808a84c4 without the online Check Rankings): Retry,')
+    header.append("// Change Course, Change Character, View Replay, Quit Game; Quit takes Check Rankings' place.")
+    header.append('inline constexpr std::array<FlowControl,5> FlowTtButtons{{')
+    for n in order:
+        b = buttons[n] if n != 'ButtonQuit' else dict(buttons['ButtonQuit'], y=buttons['ButtonRanking']['y'])
+        header.append(control_line(b, n))
+    header.append('}};')
+    header.append('inline constexpr std::array<const char*,5> FlowTtButtonText{{' + ','.join(f'"{t}"' for t in texts) + '}};')
+    emit_layout('FlowTtRecord', record_layout, record_clips, lambda name: -1, header)
 
 
 def main():

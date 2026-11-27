@@ -7,6 +7,10 @@
 
 namespace mkw::snd {
 struct Vec3f { f32 x = 0, y = 0, z = 0; };
+// A sound at a non-finite actor or listener position is silent at pitch 1 and a
+// non-finite rate never reaches the DSP (retail positions are always finite).
+// DIAG A/B: no-nonfinite-sound.txt.
+inline bool nonFiniteGuard = true;
 
 // Sound3DListener: world -> listener matrix (rows; listener looks down -z),
 // its position and per-game-frame velocity, and EchoMgr's listener volume.

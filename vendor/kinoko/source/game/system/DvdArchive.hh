@@ -23,6 +23,7 @@ public:
     void load(void *fileStart, size_t fileSize, bool decompress_);
     void mount();
     void move();
+    bool isPlainU8() const;
     void rip(const char *path);
 
     void clear();

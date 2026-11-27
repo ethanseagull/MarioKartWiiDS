@@ -15,6 +15,7 @@
 #include <mkw/diag.hpp>
 #include <mkw/race_bottom_screen.hpp>
 #include <mkw/present_pacing.hpp>
+#include <mkw/fine_cull.hpp>
 #endif
 namespace mkw {
 extern std::atomic<unsigned> fileOpens;extern std::atomic<unsigned long long> fileOpenTicks;
@@ -46,7 +47,7 @@ public:
  void start(){}
  // Called once per race-loop iteration, before begin().
  void autoFrame(bool racing){
-  if(racing){if(!active_){active_=true;skip_=true;diag::passReset();diag::skinReset();diag::drawReset();diag::writesReset();diag::textureUseReset();}return;}
+  if(racing){if(!active_){active_=true;skip_=true;diag::passReset();diag::skinReset();diag::drawReset();diag::writesReset();diag::textureUseReset();diag::costReset();fineCull::raceStart();}return;}
   if(frames_)write(true);
   active_=false;
  }
@@ -232,6 +233,9 @@ private:
      frames_?100.0*stereoFrames_/frames_:0.0,unsigned(bloom_),unsigned(stadium_),unsigned(dynamicShadows_),unsigned(renderQuality().shadowVolumes),unsigned(diag::passState.enabled),opens_,openMs_,unsigned(pipelined_),unsigned(bloomMerge_),unsigned(RaceBottomScreen::skipCoveredFill),unsigned(shadowRect_),unsigned(playerVram_),unsigned(drawDistance_),unsigned(spatialCourse_),unsigned(hudShrink_),unsigned(skyLast_),unsigned(plainUv_),unsigned(renderQuality().racerLod),unsigned(fastVertex_),unsigned(vramPriority_),(unsigned long)(extraMemory::raceBytes>>10),unsigned(textureRank::raceRanked));
     std::fclose(f);
    }
+   // DIAG track-cost.txt, before drawReset clears the model names.
+   {unsigned long ticks=0;for(unsigned i=0;i<seconds_;++i)ticks+=second_[i].ticks;diag::costWrite(index_,course_,ticks);}
+   fineCull::write(index_,course_);
    diag::passWrite(index_,course_);diag::passReset();diag::skinWrite(index_);diag::skinReset();diag::drawWrite(index_);diag::drawReset();diag::writesWrite(index_);diag::writesReset();diag::textureUseWrite(index_);diag::textureUseReset();
    reset();
   }

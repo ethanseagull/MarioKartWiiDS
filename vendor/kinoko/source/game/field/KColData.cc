@@ -611,6 +611,9 @@ void KColData::preloadVertices() {
 template <KColData::CollisionCheckType Type>
 bool KColData::checkCollision(const QueryRef &q, const PackedPrism &prism, f32 *distOut,
         EGG::Vector3f *fnrmOut, u16 *flagsOut) {
+#ifndef MKW_RELEASE
+    s_prismTests.fetch_add(1, std::memory_order_relaxed);
+#endif
     // Responsible for updating the output params
     auto out = [&](f32 dist) {
         if (distOut) {
@@ -801,6 +804,9 @@ bool KColData::checkCollision(const QueryRef &q, const PackedPrism &prism, f32 *
 /// whether we are checking movement.
 bool KColData::checkPointCollision(const PackedPrism &prism, f32 *distOut,
         EGG::Vector3f *fnrmOut, u16 *flagsOut, bool movement) {
+#ifndef MKW_RELEASE
+    s_prismTests.fetch_add(1, std::memory_order_relaxed);
+#endif
     KCLTypeMask attrMask = KCL_ATTRIBUTE_TYPE_BIT(prism.attribute);
     if (!(attrMask & m_typeMask)) {
         return false;

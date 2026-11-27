@@ -55,6 +55,8 @@ def main():
     files.update('textures/' + t.name for t in ASSETS.glob('textures/pause_controls_*.t3x'))
     # The race loading picture, when its art was cooked (cook_loading_picture.py).
     files.update('loading/' + t.name for t in ASSETS.glob('loading/race-*.bin'))
+    # The race loading screen's course reveal (cook_loading_reveal.py).
+    files.update('loading/reveal/' + t.name for t in ASSETS.glob('loading/reveal/*.bin'))
     for key, record in manifest['sprites'].items():
         if key in used or key in atlases:
             files.add(record['path'])

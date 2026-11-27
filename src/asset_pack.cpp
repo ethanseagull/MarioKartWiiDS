@@ -78,7 +78,13 @@ struct Archives {
  // RAM cache: keyed by keptKey (archive and entry offset).
  std::unordered_map<std::uint64_t,Kept> kept;size_t keptBytes=0,keepLimit=0;bool caching=false;
  // readRange of a compressed entry: the entry decoded whole, until its last byte is read.
- std::unique_ptr<unsigned char[]> decoded;const Archive* decodedArchive=nullptr;std::uint32_t decodedOffset=0;
+ std::unique_ptr<unsigned char[]> decoded;const Archive* decodedArchive=nullptr;std::uint32_t decodedOffset=0;size_t decodedBytes=0;
+ // Set when an allocation failed and releaseCache emptied the cache (mkw/heap_guard.hpp):
+ // nothing more is kept until the load ends (trimCache) or the cache is reset.
+ bool pressure=false;CacheStats stats{};
+ // The thread holding lock (its TLS address), so releaseCache, called from an
+ // allocation failure on any thread, never waits on a lock its own thread holds.
+ void* volatile owner=nullptr;
  Prefetch ahead;bool prefetch=true;
 #ifndef MKW_RELEASE
  // DIAG: pack-trace.txt logs every read (archive, offset, size, ms, cache hit,
@@ -88,6 +94,8 @@ struct Archives {
  Archives(){LightLock_Init(&lock);LightLock_Init(&ahead.lock);LightEvent_Init(&ahead.wake,RESET_ONESHOT);LightEvent_Init(&ahead.done,RESET_STICKY);}
 };
 Archives& archives(){static Archives value;return value;}
+void lockAll(Archives& all){LightLock_Lock(&all.lock);all.owner=getThreadLocalStorage();}
+void unlockAll(Archives& all){all.owner=nullptr;LightLock_Unlock(&all.lock);}
 std::uint32_t u32(const unsigned char* p){std::uint32_t v;std::memcpy(&v,p,4);return v;}
 bool load(Archive& a){
  std::FILE* f=std::fopen(a.path,"rb");if(!f)return false;
@@ -155,14 +163,17 @@ std::uint64_t keptKey(const Archives& all,const Archive& a,const Entry& e){retur
 Kept* keptEntry(Archives& all,const Archive& a,const Entry& e){
  if(all.kept.empty())return nullptr;
  auto it=all.kept.find(keptKey(all,a,e));if(it==all.kept.end())return nullptr;
+ ++all.stats.hits;all.stats.hitBytes+=it->second.size;
  it->second.used=true;return &it->second;
 }
 // With the lock held: keeps a copy of e's bytes while the heap can spare them.
 void keep(Archives& all,const Archive& a,const Entry& e,const void* bytes){
- if(!all.caching||all.keptBytes+e.stored>all.keepLimit||all.kept.count(keptKey(all,a,e)))return;
+ if(!all.caching)return;
+ ++all.stats.misses;all.stats.missBytes+=e.stored;
+ if(all.pressure||all.keptBytes+e.stored>all.keepLimit||all.kept.count(keptKey(all,a,e))){++all.stats.refused;return;}
  const struct mallinfo m=mallinfo();
  const size_t free=envGetHeapSize()-m.arena+m.fordblks;
- if(free<size_t(e.stored)+KeepFree)return;
+ if(free<size_t(e.stored)+KeepFree){++all.stats.refused;return;}
  std::unique_ptr<unsigned char[]> data(new(std::nothrow) unsigned char[e.stored?e.stored:1]);if(!data)return;
  std::memcpy(data.get(),bytes,e.stored);
  all.kept.emplace(keptKey(all,a,e),Kept{std::move(data),e.stored,true});all.keptBytes+=e.stored;
@@ -377,9 +388,9 @@ std::FILE* openFile(const char* path){
  // The packs themselves open as files: no lookup, and no re-entry of the lock.
  const size_t length=std::strlen(path);
  if(length>=4&&!std::strcmp(path+length-4,".pak"))return nullptr;
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  const Entry* e=nullptr;Archive* a=all.rooted?lookup(all,path,&e):nullptr;
- if(!a){LightLock_Unlock(&all.lock);return nullptr;}
+ if(!a){unlockAll(all);return nullptr;}
  std::FILE* result=nullptr;
  if(e->stored!=e->size||e->size<=WholeEntryBytes){
   const auto start=svcGetSystemTick();
@@ -388,10 +399,10 @@ std::FILE* openFile(const char* path){
   if(f&&f->data&&readEntry(all,*a,*e,f->data.get()))result=funopen(f,memoryRead,nullptr,memorySeek,memoryClose);
   if(!result)delete f;
   packReads.fetch_add(1,std::memory_order_relaxed);packReadBytes.fetch_add(e->size,std::memory_order_relaxed);packReadTicks.fetch_add(svcGetSystemTick()-start,std::memory_order_relaxed);
-  LightLock_Unlock(&all.lock);
+  unlockAll(all);
  }else{
   const char* pack=a->path;const std::uint32_t base=e->offset,size=e->size;
-  LightLock_Unlock(&all.lock);
+  unlockAll(all);
   auto* f=new(std::nothrow) RangeFile;
   if(f&&(f->file=std::fopen(pack,"rb"))){
    std::setvbuf(f->file,nullptr,_IONBF,0);f->base=base;f->size=size;
@@ -404,37 +415,37 @@ std::FILE* openFile(const char* path){
  return result;
 }
 #ifndef MKW_RELEASE
-void traceMark(const char* name){auto& all=archives();LightLock_Lock(&all.lock);if(all.trace){std::fprintf(all.trace,"#%s\n",name);std::fflush(all.trace);}LightLock_Unlock(&all.lock);}
+void traceMark(const char* name){auto& all=archives();lockAll(all);if(all.trace){std::fprintf(all.trace,"#%s\n",name);std::fflush(all.trace);}unlockAll(all);}
 #endif
-void open(){auto& all=archives();LightLock_Lock(&all.lock);all.rooted=true;const Entry* e=nullptr;lookup(all,"",&e);LightLock_Unlock(&all.lock);}
+void open(){auto& all=archives();lockAll(all);all.rooted=true;const Entry* e=nullptr;lookup(all,"",&e);unlockAll(all);}
 void close(){
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  stopPrefetch(all);
  for(auto& a:all.list){if(a.file)std::fclose(a.file);if(a.aheadFile)std::fclose(a.aheadFile);a.file=a.aheadFile=nullptr;a.entries.clear();a.names.clear();a.ends.clear();a.tracedEnd=0;}
  std::free(all.staging);all.staging=nullptr;all.cached=nullptr;
- all.kept.clear();all.keptBytes=0;all.caching=false;all.decoded.reset();all.decodedArchive=nullptr;
+ all.kept.clear();all.keptBytes=0;all.caching=false;all.pressure=false;all.decoded.reset();all.decodedArchive=nullptr;all.decodedBytes=0;
 #ifndef MKW_RELEASE
  if(all.trace)std::fflush(all.trace);
 #endif
- all.sectorReads=all.readAhead=all.prefetch=true;all.tried=false;LightLock_Unlock(&all.lock);
+ all.sectorReads=all.readAhead=all.prefetch=true;all.tried=false;unlockAll(all);
 }
-bool contains(const char* path){auto& all=archives();LightLock_Lock(&all.lock);const Entry* e=nullptr;const bool found=lookup(all,path,&e);LightLock_Unlock(&all.lock);return found;}
-long size(const char* path){auto& all=archives();LightLock_Lock(&all.lock);const Entry* e=nullptr;const long result=lookup(all,path,&e)?long(e->size):-1;LightLock_Unlock(&all.lock);return result;}
+bool contains(const char* path){auto& all=archives();lockAll(all);const Entry* e=nullptr;const bool found=lookup(all,path,&e);unlockAll(all);return found;}
+long size(const char* path){auto& all=archives();lockAll(all);const Entry* e=nullptr;const long result=lookup(all,path,&e)?long(e->size):-1;unlockAll(all);return result;}
 bool readInto(const char* path,void* destination,size_t bytes){
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  const Entry* e=nullptr;Archive* a=lookup(all,path,&e);
  const auto start=svcGetSystemTick();
  if(!a)lastReadFailure="not in a pack";else if(e->size!=bytes)lastReadFailure="size mismatch";
  const bool ok=a&&e->size==bytes&&readEntry(all,*a,*e,destination);
  if(a){packReads.fetch_add(1,std::memory_order_relaxed);packReadBytes.fetch_add(bytes,std::memory_order_relaxed);packReadTicks.fetch_add(svcGetSystemTick()-start,std::memory_order_relaxed);}
- LightLock_Unlock(&all.lock);return ok;
+ unlockAll(all);return ok;
 }
-long storedSize(const char* path){auto& all=archives();LightLock_Lock(&all.lock);const Entry* e=nullptr;const long result=lookup(all,path,&e)?long(e->stored):-1;LightLock_Unlock(&all.lock);return result;}
+long storedSize(const char* path){auto& all=archives();lockAll(all);const Entry* e=nullptr;const long result=lookup(all,path,&e)?long(e->stored):-1;unlockAll(all);return result;}
 bool readStored(const char* path,void* destination,size_t bytes){
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  const Entry* e=nullptr;Archive* a=lookup(all,path,&e);
  const bool ok=a&&e->stored==bytes&&readAt(all,*a,e->offset,destination,bytes);
- LightLock_Unlock(&all.lock);return ok;
+ unlockAll(all);return ok;
 }
 namespace {
 // The LZ4 block decoder behind both decodeLz4Frames forms. next(b) gives the
@@ -497,10 +508,10 @@ bool decodeLz4Frames(const char* path,size_t size,unsigned char* header,size_t h
   if(at==have){
    if(offset>=size_t(stored))return false;
    const size_t bytes=std::min(Chunk,size_t(stored)-offset);
-   auto& all=archives();LightLock_Lock(&all.lock);
+   auto& all=archives();lockAll(all);
    const Entry* e=nullptr;Archive* a=lookup(all,path,&e);
    const bool ok=a&&e->stored==size_t(stored)&&readAt(all,*a,e->offset+std::uint32_t(offset),chunk.get(),bytes);
-   LightLock_Unlock(&all.lock);
+   unlockAll(all);
    if(!ok){readFailed=true;return false;}
    offset+=bytes;have=bytes;at=0;
   }
@@ -511,7 +522,7 @@ bool decodeLz4Frames(const char* path,size_t size,unsigned char* header,size_t h
  return ok&&!readFailed;
 }
 bool readRange(const char* path,size_t offset,void* destination,size_t bytes){
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  const Entry* e=nullptr;Archive* a=lookup(all,path,&e);
  const auto start=svcGetSystemTick();
  bool ok=false;
@@ -519,30 +530,48 @@ bool readRange(const char* path,size_t offset,void* destination,size_t bytes){
   if(e->stored!=e->size){
    // Compressed: decode the entry once and serve its ranges (loadVramTexture reads in order).
    if(all.decodedArchive!=a||all.decodedOffset!=e->offset||!all.decoded){
-    all.decoded.reset(new(std::nothrow) unsigned char[e->size?e->size:1]);all.decodedArchive=nullptr;
+    all.decoded.reset();all.decodedBytes=0;all.decoded.reset(new(std::nothrow) unsigned char[e->size?e->size:1]);all.decodedArchive=nullptr;if(all.decoded)all.decodedBytes=e->size;
     if(all.decoded&&readEntry(all,*a,*e,all.decoded.get())){all.decodedArchive=a;all.decodedOffset=e->offset;}
    }
    if((ok=all.decodedArchive==a&&all.decodedOffset==e->offset))std::memcpy(destination,all.decoded.get()+offset,bytes);
-   if(!ok||offset+bytes==e->size){all.decoded.reset();all.decodedArchive=nullptr;}
+   if(!ok||offset+bytes==e->size){all.decoded.reset();all.decodedArchive=nullptr;all.decodedBytes=0;}
   }
   else if(const Kept* k=keptEntry(all,*a,*e)){std::memcpy(destination,k->data.get()+offset,bytes);ok=true;}
   else if((ok=readAt(all,*a,std::uint32_t(e->offset+offset),destination,bytes))&&!offset&&bytes==e->size)keep(all,*a,*e,destination);
  }
  if(a){packReads.fetch_add(1,std::memory_order_relaxed);packReadBytes.fetch_add(bytes,std::memory_order_relaxed);packReadTicks.fetch_add(svcGetSystemTick()-start,std::memory_order_relaxed);}
- LightLock_Unlock(&all.lock);return ok;
+ unlockAll(all);return ok;
 }
-void enableCache(size_t limit){auto& all=archives();LightLock_Lock(&all.lock);all.keepLimit=limit;LightLock_Unlock(&all.lock);}
+void enableCache(size_t limit){auto& all=archives();lockAll(all);all.keepLimit=limit;all.pressure=false;unlockAll(all);}
 size_t cacheLimitFor(size_t heap){return heap>RacePeakHeap?heap-RacePeakHeap:0;}
-void cacheReads(bool on){auto& all=archives();LightLock_Lock(&all.lock);all.caching=on&&all.keepLimit;LightLock_Unlock(&all.lock);}
+void cacheReads(bool on){auto& all=archives();lockAll(all);all.caching=on&&all.keepLimit;unlockAll(all);}
 size_t trimCache(){
- auto& all=archives();LightLock_Lock(&all.lock);
+ auto& all=archives();lockAll(all);
  for(auto it=all.kept.begin();it!=all.kept.end();){
   if(!it->second.used){all.keptBytes-=it->second.size;it=all.kept.erase(it);}
   else{it->second.used=false;++it;}
  }
- const size_t bytes=all.keptBytes;LightLock_Unlock(&all.lock);return bytes;
+ const size_t bytes=all.keptBytes;all.pressure=false;unlockAll(all);return bytes;
 }
-void dropCache(){auto& all=archives();LightLock_Lock(&all.lock);all.kept.clear();all.keptBytes=0;all.caching=false;all.decoded.reset();all.decodedArchive=nullptr;LightLock_Unlock(&all.lock);}
+void dropCache(){auto& all=archives();lockAll(all);all.kept.clear();all.keptBytes=0;all.caching=false;all.pressure=false;all.decoded.reset();all.decodedArchive=nullptr;all.decodedBytes=0;unlockAll(all);}
+size_t releaseCache(){
+ auto& all=archives();
+ // The thread holding the lock is inside a pack read and may be using the
+ // decoded entry: only the kept copies go. Any other thread waits for the lock.
+ const bool mine=all.owner==getThreadLocalStorage();
+ if(!mine)lockAll(all);
+ size_t bytes=all.keptBytes;all.kept.clear();all.keptBytes=0;all.pressure=true;
+ if(!mine&&all.decoded){bytes+=all.decodedBytes;all.decoded.reset();all.decodedArchive=nullptr;all.decodedBytes=0;}
+ if(bytes)++all.stats.releases;
+ if(!mine)unlockAll(all);
+ return bytes;
+}
+size_t cacheBytes(){auto& all=archives();lockAll(all);const size_t bytes=all.keptBytes+all.decodedBytes;unlockAll(all);return bytes;}
+CacheStats cacheStats(bool reset){
+ auto& all=archives();lockAll(all);CacheStats out=all.stats;out.bytes=all.keptBytes;
+ if(reset){const unsigned releases=all.stats.releases;all.stats={};all.stats.releases=releases;}
+ unlockAll(all);return out;
+}
 bool read(const char* path,std::vector<uint8_t>& out){
  const long bytes=size(path);if(bytes<0)return false;
  out.resize(size_t(bytes));return readInto(path,out.data(),out.size());
@@ -628,9 +657,9 @@ static void alignmentBench(Bench& b,unsigned char* buffer){
  // sectors into an aligned buffer, then the next 300 sector-rounded first (order check).
  std::vector<Entry> picks;
  {
-  auto& all=archives();LightLock_Lock(&all.lock);const Entry* none=nullptr;lookup(all,"",&none);
+  auto& all=archives();lockAll(all);const Entry* none=nullptr;lookup(all,"",&none);
   for(const Entry& e:all.list[1].entries)if(picks.size()<600&&e.size>=(2u<<10)&&e.size<=(256u<<10)&&(e.offset>>12)%5==0)picks.push_back(e);
-  LightLock_Unlock(&all.lock);
+  unlockAll(all);
  }
  auto run=[&](size_t from,bool rounded){
   u64 bytes=0;const u64 start=svcGetSystemTick();bool ok=true;
@@ -745,7 +774,7 @@ void readBench(const char* resultPath,void(*log)(const char*),int mode){
  // 9. LZ11 decode speed on real textures, with libctru's decoder.
  {
   auto& all=archives();
-  LightLock_Lock(&all.lock);
+  lockAll(all);
   const Entry* none=nullptr;lookup(all,"",&none);
   const Archive& race=all.list[1];
   std::vector<std::string> picks;size_t want=0;
@@ -753,7 +782,7 @@ void readBench(const char* resultPath,void(*log)(const char*),int mode){
    const char* n=race.names.data()+e.name;const size_t len=std::strlen(n);
    if(want<(2u<<20)&&len>4&&!std::strcmp(n+len-4,".t3x")&&e.size>(16u<<10)&&e.size<(512u<<10)&&(e.offset>>12)%7==0){picks.emplace_back(n);want+=e.size;}
   }
-  LightLock_Unlock(&all.lock);
+  unlockAll(all);
   std::vector<unsigned char> raw,one;
   for(const auto& n:picks)if(read(n.c_str(),one))raw.insert(raw.end(),one.begin(),one.end());
   if(raw.size()>(256u<<10)&&raw.size()<(16u<<20)){

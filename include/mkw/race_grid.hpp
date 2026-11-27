@@ -70,6 +70,10 @@ public:
     static float steeringTo(Vec3 forward,Vec3 offset);
     // QA autopilot: player zero follows the CPU route like the other racers.
     bool driveLocal=false;
+    // Replayed ghosts the CPU driver takes over (bit per player; reset() clears it): a watch
+    // replay hands its player 0 ghost to the AI after its finish, as a local racer's
+    // post-race driving (as Retro Rewind's EnhancedReplay.cpp). Its pad must be the host's (setHostPad).
+    uint32_t aiGhosts=0;
     CpuAi& ai(){return ai_;}
 private:
     void forwardBumps();

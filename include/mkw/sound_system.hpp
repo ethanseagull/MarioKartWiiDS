@@ -110,6 +110,10 @@ public:
  // then go exactly as before. Takes effect at the next start().
  static void setRamCache(std::size_t limit);
  static void dropRamCache();
+ // After a failed allocation, from any thread (mkw/heap_guard.hpp): frees the
+ // cache and keeps nothing more until relaxRamCache (load end) or dropRamCache.
+ static std::size_t releaseRamCache();
+ static void relaxRamCache();
  struct RamCacheStats { std::uint32_t hits = 0, misses = 0, evicted = 0, heapLow = 0; std::uint64_t hitBytes = 0, missBytes = 0; std::size_t bytes = 0; };
  static RamCacheStats ramCacheStats();
  struct Impl;

@@ -58,6 +58,8 @@ enum class LicenseLoad {Missing,Loaded,Damaged};
 LicenseLoad loadLicenseSaves(const char* directory,std::array<LicenseSave,4>& saves);
 LicenseLoad loadLicenseSave(const char* directory,unsigned slot,LicenseSave& save);
 bool writeLicenseSave(const char* directory,unsigned slot,const LicenseSave& save);
+// Why the last writeLicenseSave returned false ("" after a success), for the DIAG log.
+inline const char* licenseSaveFailure="";
 enum class LicenseUnlockActivation {None,Ready,SaveFailed};
 // Call when entering the retail Unlock page, not when recording a race or
 // opening an unrelated menu. Only the displayed reward is consumed.

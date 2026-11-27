@@ -17,7 +17,7 @@ bool hasPlayerReceiver(const Model* const* models,unsigned count,Vec3 origin,Vec
  float nearest=1920.f,opacityDistance=128.f;bool eligible=false,opacityIsRoad=false;
  auto covers=[&](Vec3 lo,Vec3 hi){return start.x>=lo.x&&start.x<=hi.x&&start.z>=lo.z&&start.z<=hi.z&&hi.y>=start.y-nearest&&lo.y<=ceiling;};
  for(unsigned i=0;i<count;++i){
-  const auto& model=*models[i];if(!covers(model.minimum,model.maximum))continue;
+  const auto& model=*models[i];if(model.vertexFormat!=VertexFormat::Full||!covers(model.minimum,model.maximum))continue;
   for(unsigned j=0;j<model.visibility.size();++j){
    const auto& sub=model.submeshes[j];
    // Blended light sheets are not the solid surface below the racer.
@@ -264,7 +264,7 @@ void Renderer::playerShadowNow(const ShadowCaster* casters,unsigned count,const 
   float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};bool ok=true;
   for(unsigned i=0;i<count&&ok;++i){
    const auto& c=casters[i];if(!c.model)continue;const auto& model=*c.model;
-   if(!model.vertices||!model.vertexCount){ok=false;break;}
+   if(model.vertexFormat!=VertexFormat::Full||!model.vertices||!model.vertexCount){ok=false;break;}
    const Bounds* local=nullptr;
    for(const auto& b:shadowCasterBounds_)if(b.model==&model&&b.vertices==model.vertices&&b.count==model.vertexCount){local=&b.bounds;break;}
    if(!local){
@@ -367,7 +367,7 @@ void Renderer::playerShadowNow(const ShadowCaster* casters,unsigned count,const 
  struct ObjectRun {unsigned index;bool clipped;uint32_t ring,ringCount;};
  static std::vector<ObjectRun> objectRuns;
  // Rigid objects (one transform, no palette) are clipped like the course.
- auto objectClippable=[&](const ShadowReceiver& r){return clip&&!r.palette&&r.model->vertices;};
+ auto objectClippable=[&](const ShadowReceiver& r){return clip&&!r.palette&&r.model->vertexFormat==VertexFormat::Full&&r.model->vertices;};
  int prepared=-1; // 0 body, 1 a wheel's contact passes
  // The camera (shadowClip's corner offset).
  Vec3 cameraPosition{};
@@ -470,7 +470,7 @@ void Renderer::playerShadowNow(const ShadowCaster* casters,unsigned count,const 
   const bool fineSelect=contact||clip;
   for(unsigned i=0;i<receiverCount;++i){
    const auto& model=*receivers[i];
-   if(!playerShadow::intersects(model.minimum,model.maximum,origin,radius))continue;
+   if(model.vertexFormat!=VertexFormat::Full||!playerShadow::intersects(model.minimum,model.maximum,origin,radius))continue;
    const bool fade=std::any_of(model.submeshes.begin(),model.submeshes.end(),[](const auto& s){return s.lighting&rainbowShadow::Flag;});
    for(unsigned j=0;j<model.visibility.size();++j){
     const auto& sub=model.submeshes[j];

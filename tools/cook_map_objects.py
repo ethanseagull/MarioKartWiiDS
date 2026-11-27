@@ -7,7 +7,7 @@ import tex3ds_cache
 from pathlib import Path
 import numpy as np
 from PIL import Image
-import race_map_bake as rb
+import map_object_bake as rb  # the renderer these icons were made with (not the newer minimap one)
 from devkitpro import tool
 from import_courses import kmp_database
 from map_object_pose import pose

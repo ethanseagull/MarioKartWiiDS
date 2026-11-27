@@ -6,6 +6,7 @@ class Renderer;
 class Texture;
 class RaceResultsFlow;
 struct RaceIntroInfo;
+struct FlowBatch;
 // Retail race-flow UI drawn over the race: the out-of-bounds wipe
 // (game_image/wipe.brlyt), the VS result boards (result/position_12players)
 // and the end-of-race buttons (button/common_w004_menu). Textures are cooked
@@ -20,6 +21,9 @@ public:
  // before the board); true once all are resident, false on a failed load.
  bool loadResultsStep(bool battle=false);
  void unloadResults();
+ // The local racer's own name (UTF-8) for its row when it races as a Mii (empty: none);
+ // set at the race load, its glyphs load with the boards.
+ void setMiiName(const char* utf8);
  bool resultsLoaded()const;
  bool resultsFailed()const;
  unsigned resultsBytes()const;
@@ -36,6 +40,9 @@ public:
  // the GPU has finished every frame that may sample them (no drain).
  void retireIntro(Renderer&);
  void drawIntro(Renderer&,const RaceIntroInfo&,unsigned frame);
+ // The Time Trial end pages (tt_end_ui.cpp): one batch with the result textures
+ // (FlowResultTextures indices), once they are resident.
+ void drawBatch(Renderer&,const FlowBatch&);
 private:
  struct Impl;std::unique_ptr<Impl> impl_;
 };

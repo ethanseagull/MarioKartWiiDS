@@ -54,6 +54,11 @@ public:
         return m_objects;
     }
 
+    /// mkw-3ds DIAG (track-cost.txt): the objects whose calc() runs each frame.
+    [[nodiscard]] size_t calcObjectCount() const {
+        return m_calcObjects.size();
+    }
+
     [[nodiscard]] const ObjectHitTable &hitTableKart() const {
         return m_hitTableKart;
     }

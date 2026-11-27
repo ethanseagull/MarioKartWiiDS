@@ -6,6 +6,7 @@
 #include <mkw/explosion_audio.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace mkw::snd {
 namespace {
@@ -77,6 +78,18 @@ void Engine3D::panSurround(f32 angle, f32 distanceNrm, f32& pan, f32& span) cons
  span = 1.0f + (s * panRange * distanceNrm + offset * (1.0f - distanceNrm));
 }
 
+// DIAG: the first sound whose 3D position was not finite (runtime.log).
+static void noteNonFinite(u32 soundId) {
+#ifndef MKW_RELEASE
+ static bool told = false;
+ if (told) return;
+ told = true;
+ if (FILE* f = std::fopen("sdmc:/3ds/MKWiiDS/runtime.log", "a")) { std::fprintf(f, "sound: non-finite 3D position, sound %lu\n", (unsigned long)soundId); std::fclose(f); }
+#else
+ (void)soundId;
+#endif
+}
+
 f32 Engine3D::doppler(f32 factor, Vec3f rel, Vec3f actorVelocity, Vec3f listenerVelocity) const {
  if (sonicVelocity == 0.0f) return 1.0f;
  const f32 len = length(rel);
@@ -102,6 +115,13 @@ Ambient Engine3D::update(const SoundEntry& s, u32 soundId, const Actor3D& actor,
  if (s.flags3d & 8) flags &= ~8u;
  if (s.dopplerFactor == 0) flags &= ~0x10u;
  Ambient a;
+ // A non-finite actor or listener position is silent at pitch 1.
+ const auto finite = [](Vec3f v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+ if (nonFiniteGuard && (!finite(actor.position) || !finite(actor.velocity) || !finite(l.velocity))) {
+  noteNonFinite(soundId);
+  a.volume = 0.0f;
+  return a;
+ }
  const Vec3f rel{l.m[0][0] * actor.position.x + l.m[0][1] * actor.position.y + l.m[0][2] * actor.position.z + l.m[0][3],
                  l.m[1][0] * actor.position.x + l.m[1][1] * actor.position.y + l.m[1][2] * actor.position.z + l.m[1][3],
                  l.m[2][0] * actor.position.x + l.m[2][1] * actor.position.y + l.m[2][2] * actor.position.z + l.m[2][3]};

@@ -23,7 +23,12 @@ inline constexpr std::array<UiMainMenuControl,7> UiMainMenuControls{{
  {2,-172.8f,-93.2f},{2,-97.2f,-93.2f},{3,135.f,-93.2f}
 }};
 // point: the touch screen highlights this cursor slot (~0u: none).
-struct UiInput {bool up=false,down=false,left=false,right=false,accept=false,back=false,start=false,switchType=false;unsigned point=~0u;};
+// mark: X (the ghost page marks a ghost to race beside the chosen one).
+struct UiInput {bool up=false,down=false,left=false,right=false,accept=false,back=false,start=false,switchType=false;unsigned point=~0u;bool mark=false;};
+// The Drift page's Help button in the lower screen's top-right corner, where a tap
+// reaches it (the License page's Settings corner). DIAG A/B: no-p4-menus.txt puts it
+// back on the upper screen.
+inline bool uiDriftHelpLower=true;
 inline constexpr unsigned UiBattleWinCounts[]={2,3,4,5,8,10}; // original808a6d58
 inline constexpr unsigned UiVsRaceCounts[]={2,3,4,5,8,10,12,16,32};
 struct UiSelection {
@@ -105,6 +110,14 @@ public:
  std::uint32_t ownGhostTime(unsigned course)const{return course<32?ownGhostTimes[std::min(selection.license,3u)][course]:0;}
  // Ghost page choice: 0 alone, 1 staff ghost, 2 expert staff ghost, 3 own ghost.
  unsigned ghostChoice=0;bool watchGhost=false; // Y on a ghost row: watch its replay
+ // X on a ghost row marks it to race beside the chosen ghost (bit n: row n; as Retro Rewind's
+ // multi-ghost Time Trials). Cleared when the Course page picks a course.
+ unsigned ghostMarks=0;
+ // The ghost page's info panel (GhostInfoControl): each row's ghost file (staff, expert staff,
+ // the license's own) for the chosen course: its racer and machine (retail ids, 0xFF none)
+ // and its Mii's name (RKG +0x3C; the license's own ghost shows the license's name). main fills it.
+ struct GhostInfo {char name[24]{};std::uint8_t character=0xFF,vehicle=0xFF;};
+ std::array<GhostInfo,3> ghostInfo{};
  int selectRaceMiiRequest=-1;unsigned selectedMiiVoice=0;
  void confirmRaceMii(unsigned weight,unsigned character);
  unsigned driverWeight()const{return selection.driver<24?UiCharacters[selection.driver].weight:std::min(selection.miiWeight,2u);}
@@ -205,6 +218,8 @@ void composeMenu(const MenuState&,const UiRaceView&,std::vector<UiQuad>&,const U
 // The top backdrop is drawn separately before the 3D preview. This returns
 // top foreground and the entire bottom page, with bottom flags ready for
 // MenuRenderer::draw. Strap/Intro and race output keep their old layout.
+// The ghost page's info panel above its rows (DIAG off-file no-ghost-info.txt: the rows alone).
+inline bool uiGhostInfo=true;
 void layoutMenuScreens(const MenuState&,const std::vector<UiQuad>& source,
                        std::vector<UiQuad>& top,std::vector<UiQuad>& bottom);
 // Allocation size of the actual sprite-index set requested by MenuRenderer.

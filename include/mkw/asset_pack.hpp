@@ -55,6 +55,16 @@ size_t cacheLimitFor(size_t heapBytes);
 void cacheReads(bool on);
 size_t trimCache();
 void dropCache();
+// After a failed allocation (mkw/heap_guard.hpp), from any thread: frees every
+// kept entry (and a held decoded entry, unless this thread is inside a pack
+// read) and keeps nothing more until trimCache, dropCache or enableCache.
+// Returns the bytes freed.
+size_t releaseCache();
+size_t cacheBytes();
+// Reads in cache scope since the last reset: served from RAM (hits) or from
+// the card (misses; refused: not kept for the limit, low heap or pressure).
+struct CacheStats {size_t bytes=0;unsigned hits=0,misses=0,refused=0,releases=0;unsigned long long hitBytes=0,missBytes=0;};
+CacheStats cacheStats(bool reset);
 #ifndef MKW_RELEASE
 // DIAG: SD read speed test on race.pak (read-bench.txt). Writes one line per
 // test to resultPath and passes each line to log. Mode 1: chunk sizes,

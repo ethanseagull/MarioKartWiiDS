@@ -513,3 +513,5 @@ inline bool passWrite(int race,unsigned course){
 }
 
 }
+// DIAG track-cost.txt counts (course cost sweep).
+#include <mkw/diag_cost.hpp>

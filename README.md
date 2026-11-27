@@ -22,7 +22,7 @@ No game files are included. Everything is converted from your own disc.
 - Course effects, lighting, cameras and items matched to the Wii
 - Runs on New 3DS and Old 3DS, optimized for both
 - 3D at 60 FPS
-- 800px Mode on New 3DS for a sharper top screen, on by default; turn it off in Settings for more performance
+- 800px Mode on New 3DS for a sharper top screen, on by default; the 3D slider still switches to 3D. Turn it off in Settings for more performance
 - Settings for texture quality, dynamic shadows, bloom, opponent detail and minimap frame rate
 - Surround sound, following the 3DS sound setting
 - Speedometer, race timer options and notification LED effects
@@ -146,7 +146,7 @@ See the [releases](https://github.com/ethanseagull/MarioKartWiiDS/releases) for 
 | B | Brake and reverse |
 | R | Hop and drift, trick off a ramp, dodge a POW |
 | L | Use item |
-| Y | Trick in the Circle Pad's direction, wheelie on bikes |
+| Y | Switch the lower screen map |
 | D-pad | Trick in that direction, Up for a wheelie or to dodge a POW |
 | ZR (New 3DS) | Same as D-pad Up |
 | X, or ZL on New 3DS | Look behind |

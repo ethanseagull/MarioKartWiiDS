@@ -279,8 +279,10 @@ void FlowDrawer::drawTeamTotals(const RaceResultsFlow& flow,FlowSink sink,void* 
       pictureQuad(batch,pane,state,mat,at,rect);
      }else pictureQuad(batch,pane,state,mat,at);
     }else{
-     const char* text=!std::strcmp(pane.name,"mii_name")?(row.character<24?FlowCharacterNames[row.character]:"Mii"):!std::strcmp(pane.name,"point")?score:!std::strcmp(pane.name,"pts")?FlowPointText[flow.teamRowShown(i)==1?0:1]:nullptr;
-     textQuads(batch,pane,state,at,text);
+     const bool own=miiName&&miiNameFont&&row.human&&row.character>=24&&!std::strcmp(pane.name,"mii_name");
+     const char* text=own?miiName:!std::strcmp(pane.name,"mii_name")?(row.character<24?FlowCharacterNames[row.character]:"Mii"):!std::strcmp(pane.name,"point")?score:!std::strcmp(pane.name,"pts")?FlowPointText[flow.teamRowShown(i)==1?0:1]:nullptr;
+     textQuads(batch,pane,state,at,text,own?*miiNameFont:FlowKanjiFont);
+     if(own){const auto& material=def.materials[pane.material];flush(sink,context,miiNameFont->texture,material.wrapS,material.wrapT,pack(mat.c0),pack(mat.c1));continue;}
     }
     const auto& material=def.materials[pane.material];flush(sink,context,nativeMii?FlowMiiPortraitTexture:pane.kind==2?FlowKanjiFont.texture:material.texture,material.wrapS,material.wrapT,pack(mat.c0),pack(mat.c1));
    }
@@ -348,16 +350,32 @@ void FlowDrawer::draw(const RaceResultsFlow& flow,FlowSink sink,void* context){
        pictureQuad(m.batch,pane,pose,material,at[i],rect);
       }else pictureQuad(m.batch,pane,pose,material,at[i]);
      }else{
-      const char* text=nullptr;const char* name=pane.name;
+      const char* text=nullptr;const char* name=pane.name;char timeText[16];
       if(!std::strcmp(name,"position"))text=FlowPositionText[std::min(i,11u)];
-      else if(!std::strcmp(name,"player_name"))text=(row.character<24?FlowCharacterNames[row.character]:"Mii");
+      else if(!std::strcmp(name,"player_name")&&flow.showTimes()){
+       // The board shows finish times instead of names (RaceResultsFlow::toggleTimes).
+       const uint32_t ms=row.finishMs,mins=std::min<uint32_t>(ms/60000,99),rest=ms-mins*60000;
+       if(ms)std::snprintf(timeText,sizeof timeText,"%u:%02u.%03u",unsigned(mins),unsigned(rest/1000),unsigned(rest%1000));else std::snprintf(timeText,sizeof timeText,"-:--.---");
+       text=timeText;
+      }
+      else if(!std::strcmp(name,"player_name")){
+       // A Mii racer's own name, in its own atlas (one batch per row).
+       if(m.miiName&&m.miiNameFont&&row.human&&row.character>=24){
+        m.flush(sink,context,FlowKanjiFont.texture,def.materials[pane.material].wrapS,def.materials[pane.material].wrapT,pack(material.c0),pack(material.c1));
+        textQuads(m.batch,pane,pose,at[i],m.miiName,*m.miiNameFont);
+        m.flush(sink,context,m.miiNameFont->texture,def.materials[pane.material].wrapS,def.materials[pane.material].wrapT,pack(material.c0),pack(material.c1));
+        continue;
+       }
+       text=(row.character<24?FlowCharacterNames[row.character]:"Mii");
+      }
       else if(!std::strcmp(name,"get_point"))text=flow.totals()?nullptr:numbers[i][0];
       else if(!std::strcmp(name,"total_score"))text=numbers[i][1];
       else if(!std::strcmp(name,"total_point"))text=FlowPointText[flow.count(i).shown==1?0:1];
-      textQuads(m.batch,pane,pose,at[i],text);
+      textQuads(m.batch,pane,pose,at[i],text,text==timeText?FlowTimeFont:FlowKanjiFont);
      }
     }
-    const int texture=pane.kind==2?FlowKanjiFont.texture:def.materials[pane.material].texture;
+    const bool times=pane.kind==2&&flow.showTimes()&&!std::strcmp(pane.name,"player_name");
+    const int texture=pane.kind==2?(times?FlowTimeFont.texture:FlowKanjiFont.texture):def.materials[pane.material].texture;
     m.flush(sink,context,texture,def.materials[pane.material].wrapS,def.materials[pane.material].wrapT,pack(material.c0),pack(material.c1));
    }
   }

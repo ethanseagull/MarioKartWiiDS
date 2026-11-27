@@ -32,6 +32,9 @@ class FlowDrawer {
 public:
  void reset();
  void setMiiPortrait(bool available){miiPortrait=available;}
+ // A Mii racer's own name for its row (the human row of a Mii character), drawn with
+ // `font` (FlowNameFont); null keeps "Mii".
+ void setMiiName(const char* name,const FlowFont* font){miiName=name;miiNameFont=font;}
  void step(const RaceResultsFlow& flow); // one 60 Hz tick
  void draw(const RaceResultsFlow& flow,FlowSink sink,void* context);
  void drawIntro(const RaceIntroInfo&,unsigned frame,FlowSink sink,void* context);
@@ -46,6 +49,7 @@ private:
  unsigned boardFrame=0;
  bool battleTotalPage=false;
  bool miiPortrait=false;
+ const char* miiName=nullptr;const FlowFont* miiNameFont=nullptr;
  std::array<Button,2> buttons{};bool menuStarted=false;unsigned lastCursor=0;int chosen=-1;
  Batch batch;
  // Working state kept off the stack: the race loop runs on the main thread,

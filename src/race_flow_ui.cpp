@@ -5,6 +5,7 @@
 #include <mkw/race_results.hpp>
 #include <mkw/battle_result_assets.hpp>
 #include <mkw/battle_result_panel.hpp>
+#include <mkw/flow_name_font.hpp>
 #include <cstdio>
 #include <mkw/renderer.hpp>
 #include <algorithm>
@@ -27,9 +28,12 @@ struct RaceFlowUi::Impl {
  std::array<Texture,5> battleFont;unsigned battleLoaded=0;bool battle=false;BattleResultPanel battlePanel;
  Renderer* renderer=nullptr;
  const Texture* miiPortrait=nullptr; // borrowed from RaceBottomScreen; no allocation
+ // The Mii racer's name (setMiiName) and its glyphs, loaded with the boards.
+ static constexpr int NameTexture=-3;
+ char miiName[64]{};FlowNameFont nameFont;bool nameTried=false;
  static void submit(const FlowBatch& batch,void* context){
   auto& m=*static_cast<Impl*>(context);
-  const Texture* t=batch.texture==FlowMiiPortraitTexture?m.miiPortrait:batch.texture>=0&&unsigned(batch.texture)<m.results.size()?&m.results[batch.texture]:nullptr;
+  const Texture* t=batch.texture==FlowMiiPortraitTexture?m.miiPortrait:batch.texture==NameTexture?&m.nameFont.texture:batch.texture>=0&&unsigned(batch.texture)<m.results.size()?&m.results[batch.texture]:nullptr;
   if(batch.texture!=-1&&(!t||!t->ready))return;
   // The sampler wrap is set where the quads are drawn (the render thread in races).
   m.renderer->drawScreenMaterialQuads(t,reinterpret_cast<const Renderer::MaterialQuad*>(batch.quads),batch.count,batch.color0,batch.color1,
@@ -94,15 +98,24 @@ bool RaceFlowUi::loadResultsStep(bool battle){
   ++m.loaded;
  }
  if(m.loaded==m.results.size()&&battle&&m.battleLoaded<m.battleFont.size()){if(!m.battleFont[m.battleLoaded].load(BattleResultTextures[m.battleLoaded])){m.failed=true;return false;}++m.battleLoaded;}
+ // The Mii racer's name glyphs (once; without them the row keeps "Mii").
+ if(m.loaded==m.results.size()&&!m.nameTried){m.nameTried=true;if(flowMiiNames&&m.miiName[0])m.nameFont.build(m.miiName,FlowKanjiFont,Impl::NameTexture);}
  return m.loaded==m.results.size()&&(!battle||m.battleLoaded==m.battleFont.size());
 }
+void RaceFlowUi::setMiiName(const char* utf8){auto& m=*impl_;std::snprintf(m.miiName,sizeof m.miiName,"%s",utf8?utf8:"");}
 void RaceFlowUi::unloadResults(){
  auto& m=*impl_;for(auto& t:m.results)t.reset();
- m.loaded=0;m.failed=false;m.miiPortrait=nullptr;m.drawer.setMiiPortrait(false);m.drawer.reset();for(auto& t:m.battleFont)t.reset();m.battleLoaded=0;m.battle=false;m.battlePanel.reset();
+ m.loaded=0;m.failed=false;m.miiPortrait=nullptr;m.drawer.setMiiPortrait(false);m.drawer.reset();
+ m.nameFont.reset();m.nameTried=false;m.drawer.setMiiName(nullptr,nullptr);for(auto& t:m.battleFont)t.reset();m.battleLoaded=0;m.battle=false;m.battlePanel.reset();
 }
 bool RaceFlowUi::resultsLoaded()const{return impl_->loaded==impl_->results.size()&&(!impl_->battle||impl_->battleLoaded==impl_->battleFont.size());}
 bool RaceFlowUi::resultsFailed()const{return impl_->failed;}
-unsigned RaceFlowUi::resultsBytes()const{unsigned n=0;for(const auto& t:impl_->battleFont)n+=t.bytes();for(const auto& t:impl_->results)n+=t.bytes();return n;}
+unsigned RaceFlowUi::resultsBytes()const{unsigned n=impl_->nameFont.texture.bytes();for(const auto& t:impl_->battleFont)n+=t.bytes();for(const auto& t:impl_->results)n+=t.bytes();return n;}
+
+void RaceFlowUi::drawBatch(Renderer& renderer,const FlowBatch& batch){
+ auto& m=*impl_;if(!resultsLoaded())return;
+ m.renderer=&renderer;Impl::submit(batch,&m);
+}
 
 void RaceFlowUi::drawWipe(Renderer& renderer,float progress){
  auto& m=*impl_;
@@ -125,6 +138,7 @@ void RaceFlowUi::drawResults(Renderer& renderer,const RaceResultsFlow& flow,cons
  m.renderer=&renderer;
  m.miiPortrait=miiPortrait&&miiPortrait->ready?miiPortrait:nullptr;
  m.drawer.setMiiPortrait(m.miiPortrait!=nullptr);
+ m.drawer.setMiiName(m.nameFont.ready()?m.nameFont.text():nullptr,m.nameFont.ready()?&m.nameFont.font():nullptr);
  m.drawer.draw(flow,&Impl::submit,&m);
  if(flow.battle()&&m.battleLoaded==m.battleFont.size())m.battlePanel.draw(flow,m.drawer,&Impl::submitBattle,&m);
 }

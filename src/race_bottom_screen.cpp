@@ -475,6 +475,8 @@ bool RaceBottomScreen::load(Renderer& renderer,unsigned course){
 #endif
     // A/B files are read once a session (three SD opens per race load otherwise).
     static const bool noKeep=sdFile("no-race-bottom-keep.txt"),noDepthOff=sdFile("no-bottom-depth-off.txt"),noDepthFree=sdFile("no-bottom-depth-free.txt");
+    // A/B: no-map-border.txt clamps the race map to its edge texels again.
+    static const bool noMapBorder=sdFile("no-map-border.txt");
     const bool whole=course>=32;
     endRace();m.keep=!noKeep;m.depthOff=!noDepthOff;m.depthFree=!noDepthFree;
     const auto* art=raceMapCourse(course);
@@ -512,7 +514,12 @@ bool RaceBottomScreen::load(Renderer& renderer,unsigned course){
     const auto& c=*art;
     m.ui=&RaceMapUi;
     renderer.loadVramTexture(m.atlas,RaceMapUi.texture,GPU_CLAMP_TO_EDGE,renderQuality().bottomRgba4);
-    if(course<32)renderer.loadVramTexture(m.map,c.texture);
+    // Race maps: past their edges the GPU draws the map's border colour (the
+    // colour its outer band fades into, tools/race_map_bake.py finish()), not
+    // the edge texels stretched across the screen. Battle maps keep clamping.
+    const bool border=c.border&&course<32&&!noMapBorder;
+    const auto wrap=border?GPU_CLAMP_TO_BORDER:GPU_CLAMP_TO_EDGE;
+    if(course<32&&renderer.loadVramTexture(m.map,c.texture,wrap)&&border)m.map.gpu.border=c.border;
     // The Standings view's textures: LINEAR loads (the DIAG also takes loose SD files), then VRAM
     // where it leaves vramReserve free. Without them the race keeps the whole-course map.
     m.ds=false;m.dsCourse=nullptr;
@@ -526,7 +533,7 @@ bool RaceBottomScreen::load(Renderer& renderer,unsigned course){
         }else{m.dsSil.reset();m.dsTile.reset();m.dsAtlas.reset();std::fprintf(stderr,"standings textures missing: course %u\n",course);}
     }
     // The whole-course map: not while Standings replaces it.
-    if(!m.ds)renderer.loadVramTexture(m.overview,c.overview);
+    if(!m.ds&&renderer.loadVramTexture(m.overview,c.overview,wrap)&&border)m.overview.gpu.border=c.border;
     if(course>=32&&(!m.atlas.ready||!m.overview.ready)){unload(renderer);return false;}
     const auto objectArt=mapObjectAtlas(course);
     if(objectArt.texture&&!renderer.loadVramTexture(m.objects,objectArt.texture))
@@ -638,8 +645,8 @@ bool RaceBottomScreen::compose(Renderer& renderer,const BottomView& view){
     m.add(m.ui->white,0,0,ScreenW,ScreenH,0x0b0f17ffu);
     const unsigned fills=m.count;
 
-    // 2. The map: the view's world rectangle over the course texture. Clamped
-    // sampling repeats the baked surround past the course's edges.
+    // 2. The map: the view's world rectangle over the course texture. Past the
+    // map's edges the GPU draws its border colour (RaceMapCourse::border).
     const BottomRacer* local=nullptr;
     for(unsigned i=0;i<view.racers;++i)if(view.racer[i].local)local=&view.racer[i];
     const float frameW=course.x1-course.x0,frameH=course.z1-course.z0;
@@ -660,8 +667,8 @@ bool RaceBottomScreen::compose(Renderer& renderer,const BottomView& view){
     float cx=local?local->x:(course.x0+course.x1)*.5f,cz=local?local->z:(course.z0+course.z1)*.5f;
     // North-up, Mario Kart 7 keeps its view inside the map: the player leaves
     // the centre near the course's edge instead of the view running off it.
-    // Turning, the player stays centred (clamped sampling repeats the baked
-    // surround past the course's edges).
+    // Turning, the player stays centred (the border colour fills what lies
+    // past the map's edges).
     auto clampAxis=[](float c,float half,float lo,float hi){return hi-lo<=2*half?(lo+hi)*.5f:std::clamp(c,lo+half,hi-half);};
     {
         const float kx=clampAxis(cx,mapWidth*.5f*upp,course.x0,course.x1),kz=clampAxis(cz,ScreenH*.5f*upp,course.z0,course.z1);

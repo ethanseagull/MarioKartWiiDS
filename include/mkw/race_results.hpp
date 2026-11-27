@@ -15,16 +15,20 @@ namespace mkw {
 //            points count up, A/B/START or the 600-frame timeout leaves.
 //  Total*    GPVSLeaderboardTotal: rows sorted by total points.
 //  Menu*     VSRaceEnd: Next Race / Quit Game (final race: Next only).
+//  Time Trials (timeTrialEnd): after HudExit the TTSplits page (0x2D: total
+//            and lap times, best lap flashing, NEW RECORD) waits for A, then
+//            TTEnd (0x21): Retry, Change Course, Change Character, View Replay,
+//            Quit Game.
 //  Leaving   the OK hold is over: the race scene fades to black through the
 //            scene's ColorFader (Page_changeSection 0x805DDBD0 ->
 //            SectionManager_startChangeSection 0x80604C30; the section
 //            changes on the fade's frame 22). The race keeps running.
 // Pure state: the caller supplies ticks, inputs and the result rows.
-enum class RaceFlowPhase:uint8_t {Racing,Finished,HudExit,UpdateIn,Update,UpdateOut,TotalIn,Total,TotalOut,MenuIn,Menu,Chosen,Leaving,Done};
+enum class RaceFlowPhase:uint8_t {Racing,Finished,HudExit,TtSplits,UpdateIn,Update,UpdateOut,TotalIn,Total,TotalOut,MenuIn,Menu,Chosen,Leaving,Done};
 // advance: A, B or START (Leaderboard handlers); accept: A on the end menu.
 struct RaceFlowInput {bool advance=false,accept=false;};
 // One result row: the racer, its retail character id and VS point totals.
-struct RaceResultEntry {uint8_t racer=0,character=0;bool human=false;uint16_t previous=0,gain=0;RaceTeam team=RaceTeam::None;};
+struct RaceResultEntry {uint8_t racer=0,character=0;bool human=false;uint16_t previous=0,gain=0;RaceTeam team=RaceTeam::None;uint32_t finishMs=0;};
 // CtrlRaceResult score state (FillScore 0x807EB0AC, fn_1_2E53E8 0x807EB174,
 // OnUpdate 0x807EB428): ten times the shown score, counting by 2 per frame.
 struct RaceResultCount {
@@ -53,6 +57,13 @@ public:
  void reset();
  // RaceHUD::BeforeControlUpdate: the local player has just finished.
  void finish(bool timeTrial=false);
+ // After finish(true): the Time Trial end pages (TTSplits, then TTEnd's five
+ // buttons) instead of the old FINISH -> menu (DIAG no-tt-end.txt).
+ void timeTrialEnd(){if(timeTrial_)ttEnd_=true;}
+ bool ttEnd()const{return ttEnd_;}
+ bool ttSplitsVisible()const{return ttEnd_&&phase_==RaceFlowPhase::TtSplits;}
+ bool ttMenuVisible()const{return ttEnd_&&phase_>=RaceFlowPhase::MenuIn&&phase_<=RaceFlowPhase::Done;}
+ static constexpr unsigned TtButtons=5;
  // One 60 Hz tick; returns Event bits. EventFill asks for fill() at once.
  uint32_t step(const RaceFlowInput& in);
  // GPVSLeaderboardUpdate::FillRows: rows in finishing order.
@@ -84,6 +95,11 @@ public:
  const RaceResultCount& count(unsigned i)const{return counts_[i];}
  bool totals()const{return phase_>=RaceFlowPhase::TotalIn;}
  bool boardVisible()const{return phase_>=RaceFlowPhase::UpdateIn&&phase_<=RaceFlowPhase::TotalOut;}
+ // A GP/VS board swaps its names for the racers' finish times (a button
+ // press, as Retro Rewind's leaderboard display swap); each fill shows names.
+ bool showTimes()const{return showTimes_;}
+ void toggleTimes(){showTimes_=!showTimes_;}
+ void setRacerTime(unsigned racer,uint32_t ms){for(unsigned i=0;i<count_;++i)if(rows_[i].racer==racer)rows_[i].finishMs=ms;}
  // Horizontal offset (layout units) of control `delay` for the current page.
  float slideOffset(float delay)const;
  bool counting()const;
@@ -93,12 +109,12 @@ public:
  bool pointsChanged()const{return pointsChanged_;}
  // End menu: buttons, cursor and the chosen option (0 Next, 1 Quit). The
  // page stays on screen under the fade until the section changes.
- bool menuVisible()const{return phase_>=RaceFlowPhase::MenuIn&&phase_<=RaceFlowPhase::Done;}
+ bool menuVisible()const{return !ttEnd_&&phase_>=RaceFlowPhase::MenuIn&&phase_<=RaceFlowPhase::Done;}
  // Black over the whole race screen while leaving (0 none, 1 opaque).
  float leaveFade()const{return phase_==RaceFlowPhase::Leaving?colorFaderOpacity(float(pageFrame_),false):phase_==RaceFlowPhase::Done?1.f:0.f;}
  bool timeTrial()const{return timeTrial_;}
  bool finalRace()const{return final_;}
- unsigned buttonCount()const{return final_?1u:2u;}
+ unsigned buttonCount()const{return ttEnd_?TtButtons:final_?1u:2u;}
  unsigned cursor()const{return cursor_;}
  // The end-menu selection is owned by MenuState (UiPage::Results).
  void setCursor(unsigned cursor){if(phase_<RaceFlowPhase::Chosen)cursor_=std::min(cursor,buttonCount()-1);}
@@ -125,7 +141,7 @@ private:
  bool teams_=false;RaceTeam humanTeam_=RaceTeam::None;
  std::array<RaceTeamScore,2> teamScores_{};
  std::array<float,2> teamDisplayed_{};std::array<float,12> teamRowDisplayed_{};
- bool timeTrial_=false;
+ bool timeTrial_=false,showTimes_=false,ttEnd_=false;
  std::array<RaceResultEntry,12> rows_{};
  std::array<RaceResultCount,12> counts_{};
 };

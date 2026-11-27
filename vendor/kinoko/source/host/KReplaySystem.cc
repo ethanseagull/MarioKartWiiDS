@@ -7,8 +7,10 @@
 #include <egg/core/Heap.hh>
 
 #include <game/field/ObjectDirector.hh>
+#include <game/field/ObjectDrivableDirector.hh>
 #include <game/system/RaceManager.hh>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +29,31 @@ void KReplaySystem::init() {
     auto *sceneCreator = EGG::egg_new<Host::SceneCreatorDynamic>();
     m_sceneMgr = EGG::egg_new<EGG::SceneManager>(sceneCreator);
 
+    // Multi-ghost replays: the extra ghosts' files, as for the first one.
+    if (const char *list = std::getenv("KINOKO_EXTRA_GHOSTS")) {
+        std::string all(list);
+        size_t at = 0;
+        while (at <= all.size() && m_extraCount < m_extraRaw.size()) {
+            const size_t comma = all.find(',', at);
+            const std::string name = all.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+            at = comma == std::string::npos ? all.size() + 1 : comma + 1;
+            if (name.empty()) {
+                continue;
+            }
+            size_t size = 0;
+            u8 *raw = Abstract::File::LoadHost(name.c_str(), size);
+            if (size < System::RKG_HEADER_SIZE || size > sizeof(System::RawGhostFile)) {
+                PANIC("Extra ghost %s cannot be a ghost! Check the file size.", name.c_str());
+            }
+            System::RawGhostFile file(raw);
+            m_extraRaw[m_extraCount] = raw;
+            m_extraGhost[m_extraCount] = EGG::egg_new<System::GhostFile>(file);
+            m_extraName[m_extraCount] = name;
+            ++m_extraCount;
+        }
+        std::printf("multi-ghost replay: %zu extra ghost(s)\n", m_extraCount);
+    }
+
     System::RaceConfig::RegisterInitCallback(OnInit, nullptr);
     Abstract::File::Remove("results.txt");
 
@@ -36,6 +63,34 @@ void KReplaySystem::init() {
 /// @brief Executes a frame.
 void KReplaySystem::calc() {
     m_sceneMgr->calc();
+    // KINOKO_NAN_CHECK: the first object whose position is not finite, once.
+    static const bool nanCheck = std::getenv("KINOKO_NAN_CHECK") != nullptr;
+    static bool nanReported = false;
+    if (nanCheck && !nanReported) {
+        static u32 frame = 0;
+        ++frame;
+        // getPosition() is what the game's sound actors read; drivable
+        // objects live in their own director.
+        auto check = [&](const auto &objects, const char *kind) {
+            for (auto *obj : objects) {
+                if (nanReported) {
+                    return;
+                }
+                const auto &p = obj->getPosition();
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+                    std::printf("NAN %s object 0x%x at frame %u\n", kind,
+                            static_cast<unsigned>(obj->id()), frame);
+                    nanReported = true;
+                }
+            }
+        };
+        if (auto *dir = Field::ObjectDirector::Instance()) {
+            check(dir->objects(), "field");
+        }
+        if (auto *dir = Field::ObjectDrivableDirector::Instance()) {
+            check(dir->objects(), "drivable");
+        }
+    }
 }
 
 /// @brief Executes a run.
@@ -276,6 +331,10 @@ KReplaySystem::~KReplaySystem() {
     EGG::egg_delete(m_sceneMgr);
     EGG::egg_delete(m_currentGhost);
     delete[] m_currentRawGhost;
+    for (size_t k = 0; k < m_extraCount; ++k) {
+        EGG::egg_delete(m_extraGhost[k]);
+        delete[] m_extraRaw[k];
+    }
 }
 
 /// @brief Determines whether or not the ghost simulation should end.
@@ -300,6 +359,7 @@ bool KReplaySystem::calcEnd() const {
 void KReplaySystem::reportFail(const std::string &msg) const {
     std::string report(m_currentGhostFileName);
     report += "\n" + std::string(msg);
+    std::printf("RESULT %s\n", msg.c_str());
     Abstract::File::Append("results.txt", report.c_str(), report.size());
 }
 
@@ -338,7 +398,32 @@ bool KReplaySystem::success() const {
         return false;
     }
 
-    return true;
+    // Multi-ghost replays: every extra ghost's timer and lap splits against its file.
+    bool ok = true;
+    for (size_t k = 0; k < m_extraCount; ++k) {
+        const auto &player = raceManager->player(k + 1);
+        const auto *ghost = m_extraGhost[k];
+        std::string msg;
+        if (ghost->raceTimer() != player.raceTimer()) {
+            msg = "Final timer desync! Expected " + format(ghost->raceTimer()) + ", got " +
+                    format(player.raceTimer());
+        }
+        for (size_t i = 0; i < 3 && msg.empty(); ++i) {
+            if (ghost->lapTimer(i) != player.getLapSplit(i + 1)) {
+                msg = "Lap " + std::to_string(i + 1) + " timer desync! Expected " +
+                        format(ghost->lapTimer(i)) + ", got " + format(player.getLapSplit(i + 1));
+            }
+        }
+        const auto &t = player.raceTimer();
+        std::printf("extra ghost %zu (%s): %u:%02u.%03u %s\n", k + 1, m_extraName[k].c_str(),
+                unsigned(t.min), unsigned(t.sec), unsigned(t.mil), msg.empty() ? "exact" : msg.c_str());
+        if (!msg.empty()) {
+            m_sceneMgr->currentScene()->heap()->enableAllocation();
+            reportFail("extra ghost " + m_extraName[k] + ": " + msg);
+            ok = false;
+        }
+    }
+    return ok;
 }
 
 /// @brief Finds the desyncing timer index, if one exists.
@@ -387,6 +472,16 @@ KReplaySystem::DesyncingTimerPair KReplaySystem::getDesyncingTimer(s32 i) const 
 void KReplaySystem::OnInit(System::RaceConfig *config, void * /* arg */) {
     config->setGhost(Instance()->m_currentRawGhost);
     config->raceScenario().players[0].type = System::RaceConfig::Player::Type::Ghost;
+    // Multi-ghost replays: players 1-3 on ghost streams 1-3.
+    auto *self = Instance();
+    if (self->m_extraCount) {
+        auto &scenario = config->raceScenario();
+        scenario.playerCount = static_cast<u8>(1 + self->m_extraCount);
+        for (size_t k = 0; k < self->m_extraCount; ++k) {
+            config->setGhost(self->m_extraRaw[k], k + 1);
+            scenario.players[k + 1].type = System::RaceConfig::Player::Type::Ghost;
+        }
+    }
 }
 
 } // namespace Kinoko

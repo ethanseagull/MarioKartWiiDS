@@ -619,11 +619,45 @@ public:
    textSprite(indices[i],cell,p);x+=cell.w;
   }
  }
+ // The ghost page's info panel (GhostInfoControl::UpdateInfo 0x805e296c on common_w075_ghost_data,
+ // variant TimeAttackGhostList): course_name, time, player (the Mii's name), mii (the license's own
+ // ghost: its portrait), chara (the racer's face) and machine (its vehicle icon) for the row the
+ // cursor is on; Solo Time Trials shows the course alone.
+ void ghostInfo(){
+  const auto& s=state;const unsigned course=std::min(s.selection.course,31u);
+  const Pose info=control("GhostInfo","TimeAttackGhostList");
+  group(UiMenuRole::Auxiliary,50,info,"ghost_info");panel("ghost_info",info);
+  glyphText(CourseNames[course],"ghost_info",info,"course_name",true);
+  const unsigned row=s.cursor;if(row>=3||!s.choiceVisible(row))return;
+  const unsigned ms=row==2?s.ownGhostTime(course):s.staffGhostTimes[course][row];
+  char time[24];std::snprintf(time,sizeof time,"%02u:%02u.%03u",ms/60000,ms/1000%60,ms%1000);
+  glyphText(time,"ghost_info",info,"time",true);
+  const auto& g=s.ghostInfo[row];
+  char name[24]{};
+  if(row==2){const unsigned slot=std::min(s.selection.license,3u);unsigned n=0;
+   for(auto u:s.licenseNames[slot]){if(!u||n+1>=sizeof name)break;name[n++]=u<128?char(u):'?';}}
+  else std::snprintf(name,sizeof name,"%s",g.name);
+  if(*name)glyphText(name,"ghost_info",info,"player",true);
+  // The pictures' panes start hidden (GhostInfoControl shows the ones it fills).
+  auto picture=[&](unsigned sprite,const char* pane,bool dynamic=false)->UiQuad*{
+   const auto* r=this->pane("ghost_info",pane);if(!r)return nullptr;
+   const auto first=out.size();quad(sprite,info.x+r->x*info.sx,-info.y+r->y*info.sy,r->w*info.sx,r->h*info.sy,1,0xffffffff,info,dynamic);
+   if(out.size()==first)return nullptr;out.back().menu.preserveAspect=true;return &out.back();
+  };
+  if(row==2){const unsigned slot=std::min(s.selection.license,3u);
+   if(slot<s.licenseOccupied.size()&&s.licenseOccupied[slot])if(auto* q=picture(~0u,"mii",true))q->licensePortrait=slot;}
+  for(unsigned d=0;d<UiCharacters.size()&&g.character<24;++d)if(UiCharacters[d].retailId==g.character){
+   char key[24];std::snprintf(key,sizeof key,"driver_%u",d);picture(uiFindSpriteKey(key),"chara");break;}
+  // The machine: its 2D icon (st_<weight><vehicle>), retail id = choice base + weight.
+  static constexpr unsigned VehicleBase[12]={0,3,6,18,21,24,9,12,15,27,30,33};
+  if(g.vehicle<36)for(unsigned c=0;c<12;++c)if(VehicleBase[c]==g.vehicle-g.vehicle%3u){
+   char key[24];std::snprintf(key,sizeof key,"vehicle_%c%u","sml"[g.vehicle%3u],c);picture(uiFindSpriteKey(key),"machine");break;}
+ }
  // A runtime caption (ghost names and times) in the native-font name glyphs.
  void glyphText(const char* value,const char* base,Pose p,const char* name="text",bool fixed=false){
   // The preload makes every glyph of every possible label resident ("Your
   // Ghost" lost its Y and u without them).
-  if(!fixed&&transition&&transition->preload)value="Staff Ghost Expert Your 0123456789:.";
+  if(!fixed&&transition&&transition->preload)value="Staff Ghost Expert Your 0123456789:.+";
   const auto* original=pane(base,name);if(!original)return;
   unsigned indices[48]{},count=0;float widths[48]{},total=0;
   for(const unsigned char* ch=reinterpret_cast<const unsigned char*>(value);*ch&&count<48;++ch){
@@ -1301,6 +1335,7 @@ static void composeMenuImpl(const MenuState& s,const UiRaceView& race,std::vecto
   // ghost is beaten), the license's own ghost, then solo. Y watches a ghost's replay.
   c.timeTrialBest();
   const unsigned course=std::min(s.selection.course,31u);
+  if(uiGhostInfo)c.ghostInfo();
   for(unsigned slot=0;slot<4;++slot){
    if(!s.choiceVisible(slot)&&!(transition&&transition->preload))continue;
    // Each row's own focus slot: the time labels (glyphText) take the pose
@@ -1310,12 +1345,13 @@ static void composeMenuImpl(const MenuState& s,const UiRaceView& race,std::vecto
    if(slot==3){c.button("ghost",slot,p,"Solo Time Trials");continue;}
    c.button("ghost",slot,p);
    const unsigned ms=slot==2?s.ownGhostTime(course):s.staffGhostTimes[course][slot];char label[40];
-   std::snprintf(label,sizeof label,"%s %u:%02u.%03u",slot==2?"Your Ghost":slot?"Expert Staff Ghost":"Staff Ghost",ms/60000,ms/1000%60,ms%1000);
+   // A ghost marked (X) to race beside the chosen one reads "+".
+   std::snprintf(label,sizeof label,"%s%s %u:%02u.%03u",s.ghostMarks>>slot&1u?"+ ":"",slot==2?"Your Ghost":slot?"Expert Staff Ghost":"Staff Ghost",ms/60000,ms/1000%60,ms%1000);
    const auto key=c.buttonState("ghost",slot);c.glyphText(label,key.c_str(),p);
   }
   // The preload composes the hint at any cursor, so its glyphs are resident
   // before the page shows (on Solo Time Trials, moving up drew them in late).
-  c.chrome("Time Trials",s.cursor<3||preload?"A: Race this ghost   Y: Watch replay":"",true);break;
+  c.chrome("Time Trials",s.cursor<3||preload?"A: Race   X: Add ghost   Y: Watch replay":"",true);break;
  }
  case UiPage::DriftHelp:{
   c.group(UiMenuRole::Shade);c.panel("confirm_back",control("RaceConfirmBack","BlackBack"));
@@ -1516,6 +1552,8 @@ MenuRect menuChoiceRect(const UiQuad& q,const MenuState& state){
  case UiPage::Ghost:{
   MenuState choices=state;choices.page=UiPage::Ghost;
   const unsigned n=std::max(choices.visibleChoiceCount(),1u),k=choices.visibleChoiceIndex(i);
+  // Below the ghost info panel: the rows at the panel's width (the Wii page's arrangement).
+  if(uiGhostInfo)return {84,110.f+27.f*float(k),192,25};
   // Four entries (both staff ghosts, your ghost, solo) fit with less room each.
   const float h=n>3?44.f:54.f,step=n>3?47.f:58.f;
   return {25,124.f-(h+step*float(n-1))*.5f+step*float(k),270,h};
@@ -1571,13 +1609,17 @@ void layoutMenuScreens(const MenuState& state,const std::vector<UiQuad>& source,
    break;
   }
   case UiMenuRole::Auxiliary:{
+   // The ghost info panel (50) under the lower header, at the composed scale.
+   if(g.page==UiPage::Ghost&&i==50){const float h=79.f,w=g.w*h/g.h;placeMenuQuad(q,MenuRect{160.f-w*.5f,29,w,h},true,bottom);break;}
    if(g.page==UiPage::MainMenu||g.page==UiPage::License||g.page==UiPage::Drift||g.page==UiPage::VSMode||g.page==UiPage::BattleMode){
     // Retail round panes are authored for the widescreen Wii canvas.
     // Restore its source X/Y ratio rather than stretching the group to a box.
     // The license screen's Settings button sits in the lower screen's top
-    // right corner (the Wii's place for it), a little smaller.
-    const bool lower=g.page==UiPage::License;
-    const float h=lower?38.f:50.f,sy=h/g.h,sx=sy*(92.f/68.f)*YScale/XScale;
+    // right corner (the Wii's place for it), a little smaller. The Drift page's
+    // Help takes the same corner so a tap reaches it; 30 high, clear of the
+    // first button row (Drift y 39).
+    const bool lower=g.page==UiPage::License||(uiDriftHelpLower&&g.page==UiPage::Drift);
+    const float h=g.page==UiPage::License?38.f:lower?30.f:50.f,sy=h/g.h,sx=sy*(92.f/68.f)*YScale/XScale;
     if(lower){placeMenuQuad(q,{316-g.w*sx,2,g.w*sx,h},true,bottom);break;}
     placeMenuQuad(q,{392-g.w*sx,3,g.w*sx,h},false,top);break;
    }

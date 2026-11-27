@@ -88,7 +88,7 @@ int RaceResultsFlow::slideSound()const{
 }
 
 void RaceResultsFlow::fill(const RaceResultEntry* byPosition,unsigned count,bool finalRace){
- count_=std::min(count,12u);final_=finalRace;filled_=true;
+ count_=std::min(count,12u);final_=finalRace;filled_=true;showTimes_=false;
  teamScores_={};teams_=false;battle_=false;humanTeam_=RaceTeam::None;
  for(unsigned i=0;i<count_;++i){const auto& row=byPosition[i];
   if(row.team==RaceTeam::None)continue;
@@ -173,9 +173,14 @@ uint32_t RaceResultsFlow::step(const RaceFlowInput& in){
   break;
  case RaceFlowPhase::HudExit:
   if(pageFrame_>=HudExitFrames){
-   if(timeTrial_){enter(RaceFlowPhase::MenuIn);cursor_=0;events|=EventMenuShown;}
+   if(timeTrial_&&ttEnd_)enter(RaceFlowPhase::TtSplits);
+   else if(timeTrial_){enter(RaceFlowPhase::MenuIn);cursor_=0;events|=EventMenuShown;}
    else {enter(RaceFlowPhase::UpdateIn);timeout_=BoardTimeout;events|=EventFill|EventResultsShown;}
   }
+  break;
+ case RaceFlowPhase::TtSplits:
+  // TTSplits::HandleClick: A leaves for TTEnd.
+  if(in.accept){enter(RaceFlowPhase::MenuIn);cursor_=0;events|=EventMenuShown;}
   break;
  case RaceFlowPhase::UpdateIn:
   if(pageFrame_>=slideDone)phase_=RaceFlowPhase::Update; // frame counter continues
@@ -207,7 +212,8 @@ uint32_t RaceResultsFlow::step(const RaceFlowInput& in){
   if(pageFrame_>=slideDone){enter(RaceFlowPhase::MenuIn);cursor_=0;events|=EventMenuShown;}
   break;
  case RaceFlowPhase::MenuIn:
-  if(pageFrame_>=MenuSlideMaxDelay+SlideFrames)phase_=RaceFlowPhase::Menu;
+  // TTEnd's last button (Quit Game) slides after a delay of 7.
+  if(pageFrame_>=(ttEnd_?7u:MenuSlideMaxDelay)+SlideFrames)phase_=RaceFlowPhase::Menu;
   break;
  case RaceFlowPhase::Menu:
   if(in.accept){chosen_=int(cursor_);enter(RaceFlowPhase::Chosen);events|=EventOptionChosen;}

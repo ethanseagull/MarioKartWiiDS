@@ -54,18 +54,22 @@ void loadOptions(const char* root,unsigned slot,LicenseSave& r){
  if(!(readOptions(file,b)||readOptions(file+".bak",b))||!std::equal(r.miiId.begin(),r.miiId.end(),b.begin()+8))return;
  r.settings.ledMode=b[16];r.settings.dynamicShadows=b[17]!=0;r.settings.ledBrightness=b[18];r.settings.speedometer=(b[19]&1)!=0;r.settings.raceTimer=TimerFile[b[19]>>1];
 }
+// Why the last writeLicenseSave failed (licenseSaveFailure, DIAG logs): the first check
+// that refused, or the file step that failed.
+const char* optionsFailure="options";
+bool fail(const char* why){licenseSaveFailure=why;return false;}
 bool writeOptions(const char* root,unsigned slot,const LicenseSave& r,const unsigned char* identity){
  Options b{},old{};std::memcpy(b.data(),"MKWO0001",8);std::copy_n(identity,8,b.begin()+8);
  b[16]=r.occupied?r.settings.ledMode:0;b[17]=r.occupied&&r.settings.dynamicShadows;b[18]=r.occupied?r.settings.ledBrightness:100;b[19]=r.occupied?(r.settings.speedometer?1:0)|unsigned(TimerFile[std::min(r.settings.raceTimer,2u)]<<1):0;
  put32(b.data()+20,optionsCrc(b));const auto file=optionsPath(root,slot),tmp=file+".tmp",bak=file+".bak";
  if(readOptions(file,old)&&b==old)return true;
- FILE* f=std::fopen(tmp.c_str(),"wb");if(!f)return false;
+ FILE* f=std::fopen(tmp.c_str(),"wb");if(!f){optionsFailure="open options .tmp";return false;}
  bool ok=std::fwrite(b.data(),1,b.size(),f)==b.size();if(std::fflush(f))ok=false;if(std::fclose(f))ok=false;
- if(!ok){std::remove(tmp.c_str());return false;}
- if(exists(file)){if(exists(bak)&&std::remove(bak.c_str()))return false;if(std::rename(file.c_str(),bak.c_str()))return false;}
- if(std::rename(tmp.c_str(),file.c_str()))return false;
+ if(!ok){std::remove(tmp.c_str());optionsFailure="write options .tmp";return false;}
+ if(exists(file)){if(exists(bak)&&std::remove(bak.c_str())){optionsFailure="remove options .bak";return false;}if(std::rename(file.c_str(),bak.c_str())){optionsFailure="rename options to .bak";return false;}}
+ if(std::rename(tmp.c_str(),file.c_str())){optionsFailure="rename options .tmp";return false;}
  // Erased preferences must not be resurrected from the old backup.
- if(!r.occupied&&exists(bak)&&std::remove(bak.c_str()))return false;
+ if(!r.occupied&&exists(bak)&&std::remove(bak.c_str())){optionsFailure="remove erased options .bak";return false;}
  return true;
 }
 void resetLicense(unsigned char* p){
@@ -118,6 +122,18 @@ bool valid(const LicenseSave& r,unsigned slot){
  const auto& s=r.settings;return slot<4&&s.license==slot&&s.ledMode<4&&s.ledBrightness>=50&&s.ledBrightness<=100&&s.ledBrightness%10==0&&s.driver<26&&s.vehicle<12&&s.vsClass<4&&s.vsCpu<3&&s.vsVehicles<3&&s.vsCourses<3&&s.vsItems<4&&std::find(std::begin(UiVsRaceCounts),std::end(UiVsRaceCounts),s.vsRaces)!=std::end(UiVsRaceCounts)
   &&s.battleCpu<3&&s.battleVehicles<3&&s.battleCourses<3&&s.battleItems<3
   &&std::find(std::begin(UiBattleWinCounts),std::end(UiBattleWinCounts),s.battleWins)!=std::end(UiBattleWinCounts);}
+// The first check of valid() that refuses (licenseSaveFailure), with the value.
+const char* invalidReason(const LicenseSave& r,unsigned slot){
+ static char why[64];const auto& s=r.settings;
+ for(unsigned i=0;i<r.cups.size();++i){const auto c=r.cups[i];if(c&&(!(c&255)||(c&255)>12||(c>>8)>8)){std::snprintf(why,sizeof why,"invalid cup %u=%x",i,unsigned(c));return why;}}
+ const std::pair<const char*,bool> checks[]={{"slot",slot<4&&s.license==slot},{"ledMode",s.ledMode<4},{"ledBrightness",s.ledBrightness>=50&&s.ledBrightness<=100&&s.ledBrightness%10==0},
+  {"driver",s.driver<26},{"vehicle",s.vehicle<12},{"vsClass",s.vsClass<4},{"vsCpu",s.vsCpu<3},{"vsVehicles",s.vsVehicles<3},{"vsCourses",s.vsCourses<3},{"vsItems",s.vsItems<4},
+  {"vsRaces",std::find(std::begin(UiVsRaceCounts),std::end(UiVsRaceCounts),s.vsRaces)!=std::end(UiVsRaceCounts)},{"battleCpu",s.battleCpu<3},{"battleVehicles",s.battleVehicles<3},
+  {"battleCourses",s.battleCourses<3},{"battleItems",s.battleItems<3},{"battleWins",std::find(std::begin(UiBattleWinCounts),std::end(UiBattleWinCounts),s.battleWins)!=std::end(UiBattleWinCounts)}};
+ const unsigned values[]={s.license,s.ledMode,s.ledBrightness,s.driver,s.vehicle,s.vsClass,s.vsCpu,s.vsVehicles,s.vsCourses,s.vsItems,s.vsRaces,s.battleCpu,s.battleVehicles,s.battleCourses,s.battleItems,s.battleWins};
+ for(unsigned i=0;i<std::size(checks);++i)if(!checks[i].second){std::snprintf(why,sizeof why,"invalid %s=%u",checks[i].first,values[i]);return why;}
+ return "invalid";
+}
 void encode(unsigned char* p,unsigned slot,const LicenseSave& r){
  if(!r.occupied){resetLicense(p);return;}
  LicenseSave previous;decode(p,slot,previous);
@@ -283,22 +299,23 @@ LicenseLoad loadLicenseSave(const char* root,unsigned slot,LicenseSave& r){
  return exists(file)||exists(file+".bak")?LicenseLoad::Damaged:LicenseLoad::Missing;
 }
 bool writeLicenseSave(const char* root,unsigned slot,const LicenseSave& r){
- if(!valid(r,slot))return false;
+ licenseSaveFailure="";
+ if(!valid(r,slot))return fail(invalidReason(r,slot));
  const std::string file=std::string(root)+"/rksys.dat",backup=file+".bak",temporary=file+".tmp";
  auto b=std::make_unique<Core>();std::string source;
  if(read(file,*b))source=file;else if(read(backup,*b))source=backup;
- else if(exists(file)||exists(backup))return false;else initialize(*b);
+ else if(exists(file)||exists(backup))return fail("rksys.dat and .bak unreadable");else initialize(*b);
  // Persist appearance before publishing a license that references it. A
  // failed core save may leave an unreferenced Mii, never a partial license.
- if(r.occupied&&r.nativeMii[0]&&(licenseMiiId(r.nativeMii)!=r.miiId||!writeNativeMii(root,r.nativeMii)))return false;
+ if(r.occupied&&r.nativeMii[0]&&(licenseMiiId(r.nativeMii)!=r.miiId||!writeNativeMii(root,r.nativeMii)))return fail(licenseMiiId(r.nativeMii)!=r.miiId?"Mii id mismatch":"Mii write");
  auto old=std::make_unique<std::array<unsigned char,LicenseSize>>();std::memcpy(old->data(),b->data()+8+slot*LicenseSize,LicenseSize);
  encode(b->data()+8+slot*LicenseSize,slot,r);
- if(source==file&&!std::memcmp(old->data(),b->data()+8+slot*LicenseSize,LicenseSize))return writeOptions(root,slot,r,b->data()+8+slot*LicenseSize+0x28);
+ if(source==file&&!std::memcmp(old->data(),b->data()+8+slot*LicenseSize,LicenseSize))return writeOptions(root,slot,r,b->data()+8+slot*LicenseSize+0x28)||fail(optionsFailure);
  put32(b->data()+CoreSize-4,crc(*b));
- FILE* in=source.empty()?nullptr:std::fopen(source.c_str(),"rb");if(!source.empty()&&!in)return false;
+ FILE* in=source.empty()?nullptr:std::fopen(source.c_str(),"rb");if(!source.empty()&&!in)return fail("open source");
  if(in)std::setvbuf(in,nullptr,_IONBF,0);
- if(in&&std::fseek(in,CoreSize,SEEK_SET)){std::fclose(in);return false;}
- FILE* out=std::fopen(temporary.c_str(),"wb");if(!out){if(in)std::fclose(in);return false;}
+ if(in&&std::fseek(in,CoreSize,SEEK_SET)){std::fclose(in);return fail("seek source");}
+ FILE* out=std::fopen(temporary.c_str(),"wb");if(!out){if(in)std::fclose(in);return fail("open rksys.dat.tmp");}
  // newlib's small default buffer fragments each run into SD commands.
  std::setvbuf(out,nullptr,_IONBF,0);
  bool ok=std::fwrite(b->data(),1,b->size(),out)==b->size();
@@ -320,12 +337,12 @@ bool writeLicenseSave(const char* root,unsigned slot,const LicenseSave& r){
  if(in)std::fclose(in);
  if(std::fflush(out))ok=false;
  if(std::fclose(out))ok=false;
- if(!ok){std::remove(temporary.c_str());return false;}
- if(source==file){if(exists(backup)&&std::remove(backup.c_str()))return false;if(std::rename(file.c_str(),backup.c_str()))return false;}
- else if(exists(file)&&std::remove(file.c_str()))return false;
- if(std::rename(temporary.c_str(),file.c_str()))return false;
- if(!r.occupied&&exists(backup)&&std::remove(backup.c_str()))return false;
- return writeOptions(root,slot,r,b->data()+8+slot*LicenseSize+0x28);
+ if(!ok){std::remove(temporary.c_str());return fail("write rksys.dat.tmp");}
+ if(source==file){if(exists(backup)&&std::remove(backup.c_str()))return fail("remove rksys.dat.bak");if(std::rename(file.c_str(),backup.c_str()))return fail("rename rksys.dat to .bak");}
+ else if(exists(file)&&std::remove(file.c_str()))return fail("remove rksys.dat");
+ if(std::rename(temporary.c_str(),file.c_str()))return fail("rename rksys.dat.tmp");
+ if(!r.occupied&&exists(backup)&&std::remove(backup.c_str()))return fail("remove erased .bak");
+ return writeOptions(root,slot,r,b->data()+8+slot*LicenseSize+0x28)||fail(optionsFailure);
 }
 LicenseUnlockActivation activateNextLicenseUnlock(const char* root,unsigned slot,
  LicenseSave& save,LicenseUnlockNotice& notice){

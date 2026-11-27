@@ -74,7 +74,9 @@ screen's fixed cost and `bottom_quads` its draws and fill.
 `lens_flare` is the flare drawn after bloom. Outside the unattended benchmark,
 `gpu-passes.txt` turns the leave-out frames on for races you play yourself;
 `no-bottom-passes.txt` leaves `bottom` and `bottom_quads` out of the rotation,
-so the other passes get more samples.
+so the other passes get more samples. Runs with `race-capture.txt` have no
+leave-out frames (a captured frame without, say, its shadow volumes reads as a
+bug); `capture-passes.txt` keeps them.
 
 ## A/B switches
 
@@ -318,6 +320,19 @@ acceleration), `no-retail-cpu-start.txt` (CPUs start at the route point
 nearest their kart, Battle respawns have no route links and the obstacle
 search's frame parity carries over from the previous race).
 
+Time Trials, one off-file each: `no-tt-end.txt` (a finished run goes from
+FINISH straight to the old menu: no TTSplits page with the lap times and NEW
+RECORD, no Retry / Change Course / Change Character / View Replay / Quit Game),
+`no-ghost-info.txt` (the ghost page lists its rows without the ghost info
+panel), `no-multi-ghost.txt` (ghosts marked with X are not raced or watched
+beside the chosen one), `no-replay-focus.txt` (A and B in a watch replay do
+not switch the camera to another ghost), `no-ghost-drive-on.txt` (a watched
+ghost parks after its finish instead of driving on under the CPU driver). On a
+VS or GP result board the D-pad, L and R swap the names for finish times.
+Autopilot: `pick:N` presses A through the TTSplits page and chooses button N of
+the end menu (Time Trials: 0 Retry ... 4 Quit Game); `next` and `quit` pass
+TTSplits too, and `X` marks a ghost on the ghost page.
+
 ## Repacked packs
 
 `tools/pakpack.c` (build: `gcc -O2 -o pakpack tools/pakpack.c`) rewrites an
@@ -370,6 +385,50 @@ computed at load (`runtime.log`: `course cache order on (cooked)` or
 `benchmark-course.txt`, `course-reorder-alternate.txt` turns it off on every
 second course load, and `course-reorder-control.txt` does the load work but
 draws the old order (a timing control).
+`no-course-weld.txt` keeps the course and sky parts' vertices as cooked; by
+default, after the load-time bake, the vertices of submeshes that read no
+normal (baked or unlit colour, no environment mapping) that agree in
+position, both UV pairs and colour become one, and every index list is
+remapped (same triangles, same order, same picture; `runtime.log`: `course
+weld on: ... merged`). `course-weld-alternate.txt` welds every second course
+load (first on).
+`no-fine-cull.txt` culls the course in its 128-triangle blocks only; by
+default (New 3DS) a block partly in view submits only its 16-triangle
+children that reach the view, up to 16 draws per submesh (only wholly
+off-screen triangles go; same picture). On an Old 3DS it is off unless
+`o3ds-fine-cull.txt` is on the SD. `fine-cull-alternate.txt` turns it on for
+the first race and off for the next, and so on. `perf-cull.csv` gets one row
+per race (culled draws, box tests, draw calls and triangles per frame);
+`fine-cull-verify.txt` checks every triangle the children leave out against
+the clip planes (`verify_dropped`, `verify_failed` must be 0) and
+`cull-vertex-count.txt` adds the vertex runs of the culled draws (slow).
+`no-course-facing.txt` (New 3DS) draws each culled course range whole; by
+default the triangles its cull mode removes are left out of a per-frame index
+list first (same pixels, less vertex work; heartbeat line `course facing`).
+`no-course-pack.txt` (New 3DS) keeps every course part's 44-byte vertex
+record; by default parts whose draws read no normal store 32-byte records,
+parts with some lit submeshes store the full record only for the vertices
+those draw, and vertices no index list uses (the weld's merged-away ones)
+are freed (exact; `runtime.log`: `course pack (new 3ds)`). Not while Dynamic
+Shadows is on. `course-pack-part-normals.txt` packs whole parts only. On an
+Old 3DS the profile does the same (`o3ds-keep-normals.txt`,
+`o3ds-no-mesh-compact.txt`, `o3ds-part-normals.txt` turn its parts off);
+`o3ds-short-positions.txt` also stores s16 positions on a grid there (near,
+not exact: changes pixels).
+`no-opaque-order.txt` takes the course draw order of blended, depth-writing
+DrawOpa materials from the hand table in `course_opaque_order.hpp` instead of
+the generated one (`tools/generate_course_phases.py`; the same rows on the
+retail disc); `runtime.log` line `course blended depth-write submeshes` lists
+each such submesh's pass.
+`track-cost.txt` writes per-race cost counts for a course sweep (counts, not
+timings): `perf-race-NNN-cost-bins.csv` (triangles by view depth and screen
+area), `-cost-models.csv` (per pass and model), `-cost-frames.csv` (draws,
+triangles and vertex runs per group), and a `perf-cost.csv` row per race
+(KCL prism tests per tick, objects, load failures, pack reads);
+`runtime.log` line `track cost load` per course load.
+`loose-courses.txt` opens course archives (`Race/Course/*.szs`) from the
+SD's own `Race/Course/` folder before the packs (a course archive cook check
+without new packs).
 `no-texture-share.txt` loads every course object model's textures as cooked;
 by default a texture identical to one an earlier object model of the course
 loaded (size, format, sampler state, every byte) uses that copy (Daisy
@@ -393,6 +452,11 @@ check `gpu-guard.log` has no `4-BIT VRAM` line, and run it on the console
 through kart select and a race load before making it the default.
 `stereo-slider.txt` (a number from 0 to 1) pins the 3D slider for comparable
 runs. As with the slider, the right eye turns on above 0.03 and off at or below 0.01.
+With 800px Mode on, the slider up draws 3D at 400px per eye and the slider down
+800px; `no-slider-3d.txt` brings back the old rule (800px ignores the slider).
+`stereo-slider-cycle.txt` (seconds) makes the slider read 0 and 0.6 in turn, so a
+run crosses the 800px / 3D switch again and again (`runtime.log`: `stereo capable
+... slider_overrides_800=`).
 3D reductions, each on while the slider is up (`runtime.log`: `stereo ...`):
 `no-stereo-60.txt` (3D at 30 FPS), `no-stereo-opponent-lod.txt` (opponents as in
 2D), `no-stereo-small-textures.txt` (full-size textures), `no-stereo-eye-cull.txt`
@@ -441,6 +505,8 @@ and the intro's 3D lower view uses the top LCD's depth buffer once the upper
 screen is drawn, cleared first (`runtime.log`: `bottom screen … vram_free=…`).
 The Settings page's options are in `settings.dat`, not in the license:
 (Dynamic Shadows was removed on Nov 17; byte 9 stays 0.)
+`no-map-border.txt` clamps the race maps to their edge texels again instead of
+drawing their border colour past the map's edges.
 
 ## Ghost sync check
 

@@ -54,6 +54,8 @@ struct RacerVisuals::Impl {
         unsigned keyCharacter=~0u,keyVehicle=~0u,keyTeam=~0u;
     };
     std::array<std::unique_ptr<Racer>,11> racers;
+    unsigned focus=0; // setFocus: player drawn opaque though a ghost (0: none)
+    bool translucent(unsigned i)const{return racers[i]->ghost&&focus!=i+1;}
     unsigned count=0;
     // Set reuse (park()): the last race's racers and the settings they loaded with.
     std::array<std::unique_ptr<Racer>,11> parked;unsigned loadedSettings=0,parkedSettings=0,reused=0;
@@ -380,7 +382,7 @@ void RacerVisuals::draw(Renderer& renderer,const RaceItems& items,Vec3 viewer,un
     for(unsigned i=0;i<11;++i)if(auto* r=d.racers[i].get()){
         if(d.queued[i])jobWorker().finish(d.jobs[i]);else d.prepareRacer(i);
         const auto& out=d.prepared[i];
-        if(out.draw&&!r->ghost&&r->shadow&&d.frame.view.visible(*r->shadow,out.body)&&
+        if(out.draw&&!d.translucent(i)&&r->shadow&&d.frame.view.visible(*r->shadow,out.body)&&
            !RenderQuality::shadowTooSmall({r->shadow->minimum,r->shadow->maximum},out.body,d.frame.camera,d.frame.shadowRatio))
             shadows[shadowCount++]={r->shadow.get(),out.body};
     }
@@ -390,13 +392,14 @@ void RacerVisuals::draw(Renderer& renderer,const RaceItems& items,Vec3 viewer,un
     d.lowDrivers=0;
     for(unsigned i=0;i<11;++i)if(d.racers[i]){
         const auto& out=d.prepared[i];d.lowDrivers+=out.draw&&out.driverVisible&&out.lowDriver;
-        if(!d.racers[i]->ghost)d.drawPrepared(renderer,i);
+        if(!d.translucent(i))d.drawPrepared(renderer,i);
     }
     d.frame.open=false;
 }
+void RacerVisuals::setFocus(unsigned player){impl_->focus=player;}
 void RacerVisuals::drawGhosts(Renderer& renderer){
     // Retail ghosts are see-through but hide their own far side: depth first.
-    for(unsigned i=0;i<11;++i)if(impl_->racers[i]&&impl_->racers[i]->ghost){
+    for(unsigned i=0;i<11;++i)if(impl_->racers[i]&&impl_->translucent(i)){
         for(uint8_t pass=1;pass<=2;++pass){renderer.ghostPass=pass;impl_->drawPrepared(renderer,i);}
         renderer.ghostPass=0;
     }

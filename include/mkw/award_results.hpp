@@ -10,6 +10,8 @@ namespace mkw {
 struct AwardResults {
  struct Player {uint8_t racer=0,character=0,vehicle=0;bool human=false;RaceTeam team=RaceTeam::None;unsigned points=0;};
  NativeMii raceMii{};
+ // The local racer's own name (UTF-8) when it races as a Mii, for its row.
+ std::array<char,32> raceMiiName{};
  bool valid=false,teams=false,mirror=false,coinRunners=false;
  // Unknown until the race's original GP performance counters are captured.
  int grade=-1;

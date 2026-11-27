@@ -1,16 +1,31 @@
 #!/usr/bin/env python3
 """List existing runtime inputs only; does not copy files or build a package."""
-import hashlib,json,struct
+import hashlib,json,os,struct
 from gx_material import GMDL_SUBMESH_BYTES
 from menu_asset_inputs import compiled_menu_textures,supplemental_menu_textures
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];assets=ROOT/'sd-card/3ds/mkw-3ds'
+# Content hashes by path, size and modification time (build/hash-cache.json): an
+# unchanged file is not read again; every check below still compares its hash.
+_hash_cache_path=ROOT/'build/hash-cache.json'
+try:_hash_cache=json.loads(_hash_cache_path.read_text())
+except (OSError,ValueError):_hash_cache={}
+_hash_cache_new=[]
+def sha256_of(path):
+ path=Path(path);stat=path.stat();key=str(path.resolve());stamp=[stat.st_size,stat.st_mtime_ns]
+ row=_hash_cache.get(key)
+ if row and row[:2]==stamp:return row[2]
+ digest=hashlib.sha256()
+ with path.open('rb') as source:
+  for block in iter(lambda:source.read(1<<22),b''):digest.update(block)
+ _hash_cache[key]=stamp+[digest.hexdigest()];_hash_cache_new.append(key)
+ return _hash_cache[key][2]
 roster_overlay=ROOT/'build/roster'
 driver_effects=ROOT/'build/driver-effects'
 driver_effect_receipt=driver_effects/'receipt.json'
 if not driver_effect_receipt.is_file():raise ValueError('Run tools/cook_driver_effects.py before packaging')
 driver_effect_info=json.loads(driver_effect_receipt.read_text())
-if driver_effect_info.get('exporterSha256')!=hashlib.sha256((ROOT/'tools/export_driver.ts').read_bytes()).hexdigest():raise ValueError('Re-cook driver effect roots after exporter changes')
+if driver_effect_info.get('exporterSha256')!=sha256_of((ROOT/'tools/export_driver.ts')):raise ValueError('Re-cook driver effect roots after exporter changes')
 driver_effect_files={row['path']:row for row in driver_effect_info['files']}
 battle_root=ROOT/'build/battle-balloon-assets'
 battle=json.loads((battle_root/'receipt.json').read_text())
@@ -20,11 +35,11 @@ def roster_asset(relative):
  if relative.is_absolute() or '..' in relative.parts:raise ValueError('Invalid roster asset path')
  if relative.as_posix() in battle_files:
   candidate=battle_root/relative
-  if hashlib.sha256(candidate.read_bytes()).hexdigest()!=battle_files[relative.as_posix()]['sha256']:raise ValueError('Battle balloon asset changed: '+str(relative))
+  if sha256_of(candidate)!=battle_files[relative.as_posix()]['sha256']:raise ValueError('Battle balloon asset changed: '+str(relative))
   return candidate
  if relative.as_posix() in driver_effect_files:
   candidate=driver_effects/relative
-  if hashlib.sha256(candidate.read_bytes()).hexdigest()!=driver_effect_files[relative.as_posix()]['sha256']:raise ValueError('Driver effect bank changed: '+str(relative))
+  if sha256_of(candidate)!=driver_effect_files[relative.as_posix()]['sha256']:raise ValueError('Driver effect bank changed: '+str(relative))
   return candidate
  candidate=ROOT/'build/team-vehicles'/relative
  if candidate.is_file():return candidate
@@ -39,7 +54,7 @@ native_info=json.loads((native_mii/'receipt.json').read_text())
 native_resource=native_mii/'mii/CFL_Res.dat'
 # Built without --cfl: the game mounts the console's CFL archive instead.
 if native_info.get('absent'):pass
-elif native_resource.stat().st_size!=native_info['bytes'] or hashlib.sha256(native_resource.read_bytes()).hexdigest()!=native_info['sha256']:
+elif native_resource.stat().st_size!=native_info['bytes'] or sha256_of(native_resource)!=native_info['sha256']:
  raise ValueError('Native Mii resource changed; run stage_native_mii_resource.py')
 if not native_info.get('absent'):files[native_resource]=Path('mii/CFL_Res.dat')
 # Real ceremony kart simulation reads its original KMP/KCL through ResourceManager.
@@ -68,7 +83,12 @@ for course in catalog['courses']:
  archive=Path(course['archive']);receipt=Path(course['receipt'])
  if archive.parent!=Path('Race/Course') or archive.suffix!='.szs' or receipt.parent!=Path('models/courses'):raise ValueError('Invalid course path')
  source=ROOT/'data/extracted'/archive
- if hashlib.sha256(source.read_bytes()).hexdigest()!=course['archive_sha256']:raise ValueError('Source archive changed: '+course['name'])
+ if sha256_of(source)!=course['archive_sha256']:raise ValueError('Source archive changed: '+course['name'])
+ # The pack holds the archive without the course, sky and minimap models cooked
+ # from it, as plain U8 (tools/course_runtime_archive.py): Kinoko keeps the whole
+ # archive in its arena for the race and never reads those models.
+ from course_runtime_archive import runtime_path
+ source=runtime_path(archive,course['archive_sha256'])
  files[source]=archive;files[assets/receipt]=receipt
  # Placed objects: tools/cook_course_objects.py meshes and animation banks.
  visuals=assets/f"models/course_{course['id']:02d}_visuals.list"
@@ -130,7 +150,7 @@ expected={choice['prefix'] for choice in garage['choices']}
 if {row['prefix'] for row in shadow_manifest['choices']}!=expected:raise ValueError('Cook every vehicle shadow before packaging')
 for row in shadow_manifest['choices']:
  relative=Path('models')/(row['prefix']+'shadow.gmdl');source=shadow_root/relative
- if hashlib.sha256(source.read_bytes()).hexdigest()!=row['sha256']:raise ValueError('Vehicle shadow changed: '+str(relative))
+ if sha256_of(source)!=row['sha256']:raise ValueError('Vehicle shadow changed: '+str(relative))
  files[source]=relative
 files[shadow_root/'models/vehicle-shadows.json']=Path('models/vehicle-shadows.json')
 item_shadow_root=ROOT/'build/item-shadows'
@@ -140,7 +160,7 @@ if item_shadow_manifest.get('version')!=1 or {row['path'] for row in item_shadow
  raise ValueError('Cook both original item shadows before packaging')
 for row in item_shadow_manifest['models']:
  relative=Path(row['path']);source=item_shadow_root/relative
- if hashlib.sha256(source.read_bytes()).hexdigest()!=row['sha256'] or hashlib.sha256((ROOT/row['source']).read_bytes()).hexdigest()!=row['source_sha256']:
+ if sha256_of(source)!=row['sha256'] or sha256_of((ROOT/row['source']))!=row['source_sha256']:
   raise ValueError('Original item shadow changed: '+str(relative))
  files[source]=relative
 files[item_shadow_root/'models/item-shadows.json']=Path('models/item-shadows.json')
@@ -150,11 +170,7 @@ files[assets/'textures/drift-effects-bike.bin']=Path('textures/drift-effects-bik
 menu_ui=json.loads((assets/'models/menu-ui.json').read_text())
 if menu_ui.get('version') not in (1,2) or len(menu_ui.get('maps',[]))!=32:raise ValueError('Cook source layouts for all 32 race maps before packaging')
 files[assets/'models/menu-ui.json']=Path('models/menu-ui.json')
-def digest_file(path):
- digest=hashlib.sha256()
- with path.open('rb') as source:
-  for block in iter(lambda:source.read(1024*1024),b''):digest.update(block)
- return digest.hexdigest()
+def digest_file(path):return sha256_of(path)
 # Validate source receipts before mixing cooked UI revisions into a package.
 for name,expected in menu_ui.get('sourceHashes',{}).items():
  source=ROOT/name
@@ -212,7 +228,7 @@ for entry in menu_models['models']:
  models.append(model)
  animation=assets/'models'/(prefix+'.dskm')
  if entry.get('animation'):
-  if hashlib.sha256(animation.read_bytes()).hexdigest()!=entry['animation_sha256']:raise ValueError('Menu animation changed: '+prefix)
+  if sha256_of(animation)!=entry['animation_sha256']:raise ValueError('Menu animation changed: '+prefix)
   files[animation]=Path('models')/animation.name
 # Complete menu Mii bodies, with their own animations and texture dependencies.
 # Identity heads are built from the selected part bank, outside race rendering.
@@ -223,10 +239,10 @@ if {row['stem'] for row in mii_info['models']}!=expected_mii or len(mii_info['mo
 for row in mii_info['models']:
  prefix='ui_mii_'+row['stem']
  if row['model']['name']!=prefix+'_000':raise ValueError('Invalid Mii body model name')
- if hashlib.sha256((ROOT/row['source']).read_bytes()).hexdigest()!=row['sourceSha256']:raise ValueError('Original Mii body changed')
+ if sha256_of((ROOT/row['source']))!=row['sourceSha256']:raise ValueError('Original Mii body changed')
  for relative,sha in [(Path('models')/(prefix+'_000.gmdl'),row['model']['sha256']),(Path('models')/(prefix+'.dskm'),row['animationSha256'])]:
   source=mii_root/relative
-  if hashlib.sha256(source.read_bytes()).hexdigest()!=sha:raise ValueError('Menu Mii asset changed: '+str(relative))
+  if sha256_of(source)!=sha:raise ValueError('Menu Mii asset changed: '+str(relative))
   files[source]=relative
  data=(mii_root/'models'/(prefix+'_000.gmdl')).read_bytes()
  magic,version,nv,ni,ns,nt=struct.unpack_from('<4s5I',data)
@@ -481,7 +497,7 @@ if not audio_manifest.is_file():raise ValueError('Run tools/cook_audio.py before
 audio=json.loads(audio_manifest.read_text())
 sound_source=ROOT/'data/extracted/sound'
 if audio.get('version')!=1 or digest_file(ROOT/audio['source'])!=audio['sourceSha256']:raise ValueError('Sound archive changed: rerun tools/cook_audio.py')
-if hashlib.sha256((ROOT/'build/audio/audio/sound.arc').read_bytes()).hexdigest()!=audio['arcSha256']:raise ValueError('sound.arc does not match its manifest')
+if sha256_of((ROOT/'build/audio/audio/sound.arc'))!=audio['arcSha256']:raise ValueError('sound.arc does not match its manifest')
 overlay['audio/sound.arc']=ROOT/'build/audio/audio/sound.arc'
 overlay['audio/revo_kart.brsar']=ROOT/audio['source']
 for rel,info in audio['streams'].items():
@@ -545,4 +561,7 @@ for archive in ('menu.pak','race.pak'):
  if (assets/archive).is_file():files[assets/archive]=Path(archive)
 # Cook receipts (.json) are build records: the game reads none of them.
 files={src:rel for src,rel in files.items() if rel.suffix!='.json'}
+if _hash_cache_new:
+ _hash_cache_path.parent.mkdir(parents=True,exist_ok=True);temporary=_hash_cache_path.with_suffix('.tmp')
+ temporary.write_text(json.dumps(_hash_cache));os.replace(temporary,_hash_cache_path)
 print(json.dumps({rel.as_posix():str(src) for src,rel in files.items()},indent=2))

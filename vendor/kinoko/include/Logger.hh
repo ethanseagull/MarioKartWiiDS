@@ -16,14 +16,34 @@
 
 #ifdef KINOKO_QUIET
 // Release builds: every check still runs and still aborts; nothing is printed.
+// The failed check is kept for the port's abort log (DIAG: FAIL abort ... kinoko=).
+namespace Kinoko {
+inline const char *volatile s_abortWhere = nullptr;
+// The code address of the failed check and its function's return address.
+inline void *volatile s_abortPc = nullptr;
+inline void *volatile s_abortCaller = nullptr;
+// The last file asked of the ResourceManager and the last object created,
+// for the abort log (a check failing while either is read names it).
+inline char s_lastFile[48] = "";
+inline volatile int s_lastObject = -1;
+}
 #define RUNTIME_ASSERT(e) \
     do { \
         if (!(e)) { \
+            __label__ kinokoFailed; \
+        kinokoFailed: \
+            ::Kinoko::s_abortWhere = "[" FILE_NAME ":" TOSTRING(__LINE__) "] ASSERT: " #e; \
+            ::Kinoko::s_abortPc = &&kinokoFailed; \
+            ::Kinoko::s_abortCaller = __builtin_return_address(0); \
             abort(); \
         } \
     } while (0)
 #define ASSERT(e) RUNTIME_ASSERT(e)
-#define PANIC(m, ...) abort()
+#define PANIC(m, ...) \
+    do { \
+        ::Kinoko::s_abortWhere = "[" FILE_NAME ":" TOSTRING(__LINE__) "] PANIC: " m; \
+        abort(); \
+    } while (0)
 #define WARN(m, ...) \
     do { \
     } while (0)

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <vector>
 
 namespace mkw {
 namespace {
@@ -340,6 +341,13 @@ AwardSceneResult runAwardPodium(Renderer& renderer,const AwardResults& results,v
   if(fade>0)renderer.drawScreenFade(fade,false);
  heartbeat.at("end");
  renderer.end();
+#ifndef MKW_RELEASE
+ // DIAG award-capture.txt: the result board once it has come in (award-board.ppm, 400x240).
+ {static const bool capture=[]{if(FILE* f=std::fopen("sdmc:/3ds/MKWiiDS/award-capture.txt","rb")){std::fclose(f);return true;}return false;}();
+  static bool captured=false;
+  if(capture&&!captured&&phase==Phase::Board&&frame>=200){captured=true;std::vector<uint8_t> pixels(400*240*3);
+   if(renderer.captureTop(pixels.data()))if(FILE* f=std::fopen("sdmc:/3ds/MKWiiDS/award-board.ppm","wb")){std::fprintf(f,"P6\n400 240\n255\n");std::fwrite(pixels.data(),1,pixels.size(),f);std::fclose(f);}}}
+#endif
  heartbeat.drawn();heartbeat.at("record");
  if(fade<1.f){
   if(!entryRecorded){recordLoad("ceremony",entryStart);entryRecorded=true;}
