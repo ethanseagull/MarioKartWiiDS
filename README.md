@@ -1,5 +1,11 @@
 <p align="center"><img src="tools/release/artwork/logo.png" alt="Mario Kart WiiDS" width="640"></p>
 
+<p align="center">
+  <a href="https://discord.gg/vfz8fs6Em"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://x.com/ethanseagull2"><img src="https://img.shields.io/badge/X-@ethanseagull2-000000?logo=x&logoColor=white" alt="X"></a>
+  <a href="https://www.youtube.com/@ethanseagull2"><img src="https://img.shields.io/badge/YouTube-@ethanseagull2-FF0000?logo=youtube&logoColor=white" alt="YouTube"></a>
+</p>
+
 # Mario Kart WiiDS
 
 A native Nintendo 3DS port of Mario Kart Wii. This fork builds on
